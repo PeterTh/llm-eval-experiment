@@ -17,21 +17,23 @@ BENCHMARKS = [
 ]
 
 
-MODELS = {"claude-sonnet-4.5":"1x",
-          "claude-haiku-4.5":"0.33x",
-          "claude-opus-4.6":"3x",
-          "claude-opus-4.5":"3x",
-          "claude-sonnet-4":"1x",
-          "gemini-3-pro-preview":"1x",
-          "gpt-5.2-codex":"1x",
-          "gpt-5.2":"1x",
-          "gpt-5.1-codex-max":"1x",
-          "gpt-5.1-codex":"1x",
-          "gpt-5.1":"1x",
-          "gpt-5":"1x",
-          "gpt-5.1-codex-mini":"0.33x",
-          "gpt-5-mini":"0x",
-          "gpt-4.1":"0x"}
+MODELS = {"claude-sonnet-4.5":1,
+          "claude-haiku-4.5":0.33,
+          "claude-opus-4.6":3,
+          "claude-opus-4.5":3,
+          "claude-sonnet-4":1,
+          "gemini-3-pro-preview":1,
+          "gpt-5.2-codex":1,
+          "gpt-5.2":1,
+          "gpt-5.1-codex-max":1,
+          "gpt-5.1-codex":1,
+          "gpt-5.1":1,
+          "gpt-5":1,
+          "gpt-5.1-codex-mini":0.33,
+          "gpt-5-mini":0,
+          "gpt-4.1":0}
+
+BASE_COST_PER_REQUEST = 0.04 # base cost in dollars for github copilot requests, to multiply with per-model cost factors
 
 PARAMS = "--allow-all-paths --allow-all-tools --no-ask-user --no-color"
 
@@ -64,9 +66,25 @@ BENCH_SOURCE = "../benchmarks"
 
 COMMON_SOURCE = "common"
 
-# Evaluation configuration
+# Read command line arguments for testing mode, whether to continue an existing run, and whether to actually run ##############################################
 
-TESTING = true
+TESTING = ARGV.include?("--production") ? false : true
+DO_RUN = ARGV.include?("--run")
+# syntax is --continue=timestamp, e.g. --continue=20240601-120000
+CONTINUE_FROM = ARGV.find { |arg| arg.start_with?("--continue=") }&.split("=")&.last
+
+if ARGV.include?("--help") || ARGV.include?("-h")
+    puts "Usage: ruby experiment.rb [options]"
+    puts "Options:"
+    puts "  --production           Run the full experiment with all configurations (default is testing mode with limited configurations)"
+    puts "  --continue=TIMESTAMP   Continue an existing experiment from the given timestamp (format: YYYYMMDD-HHMMSS)"
+    puts "  --run                  Actually run the experiments (without this flag, the script will only print the planned experiments and estimated time/cost)"
+    exit
+end
+
+puts "Running in #{TESTING ? "testing" : "production"} mode, with #{DO_RUN ? "actual runs" : "no runs (dry run)"} and #{CONTINUE_FROM ? "continuing from #{CONTINUE_FROM}" : "starting fresh"}."
+
+# Evaluation configuration ####################################################################################################################################
 
 if TESTING
     BENCHMARKS_TO_EVAL = ["black-scholes", "matmul", "nbody", "qtclustering"]
@@ -80,9 +98,16 @@ else
     NUM_RUNS = 5
 end
 
-# Pre-experiment
+# Pre-experiment ##############################################################################################################################################
 
-TIMESTAMP = Time.now.strftime("%Y%m%d-%H%M%S")
+experiments_per_model = BENCHMARKS_TO_EVAL.size * PAR_TYPES_TO_EVAL.size * NUM_RUNS
+$total_experiments = experiments_per_model * MODELS_TO_EVAL.size
+
+puts "Total number of experiments to run: #{$total_experiments}"
+total_cost = MODELS_TO_EVAL.map { |model| MODELS[model.to_sym] }.sum * BASE_COST_PER_REQUEST * experiments_per_model
+puts "Estimated total cost of the experiment: #{total_cost.round(2)} USD"
+
+TIMESTAMP = CONTINUE_FROM || Time.now.strftime("%Y%m%d-%H%M%S")
 EVAL_DIR = File.join(EVAL_ROOT, "#{TIMESTAMP}")
 
 # check correct configuration of benchmark folder
@@ -90,7 +115,7 @@ if BENCHMARKS_TO_EVAL.any? { |b| !File.directory?(File.join(BENCH_SOURCE, b)) }
     raise "One or more benchmark folders not found in #{BENCH_SOURCE}. Check the BENCHMARKS list and the BENCH_SOURCE."
 end
 
-# Experiment helpers
+# Experiment helpers ##########################################################################################################################################
 
 def run_id_string(benchmark, model, par_type, run)
     return "#{benchmark}_#{model}_#{par_type}_r#{run}"
@@ -108,11 +133,24 @@ def prepare_folder(benchmark, model, par_type, run)
 end
 
 $times = []
-$total_experiments = BENCHMARKS_TO_EVAL.size * MODELS_TO_EVAL.size * PAR_TYPES_TO_EVAL.size * NUM_RUNS
 
 def eval_config(benchmark, model, par_type, run)
     id = run_id_string(benchmark, model, par_type, run)
     print "Evaluating configuration: #{id}"
+
+    # if we have a timing file for this run already, skip it (for continuing existing runs)
+    bench_path = File.join(EVAL_DIR, id)
+    if File.exist?(File.join(bench_path, "timing.txt"))
+        puts " - Timing file already exists, skipping run"
+        return
+    end
+
+    # do this check afterwards so we can test the continue functionality without actually running the experiments
+    if !DO_RUN
+        puts " - Skipping actual run (dry run mode)"
+        return
+    end
+
     start_time = Time.now
 
     bench_path = prepare_folder(benchmark, model, par_type, run)
@@ -145,7 +183,7 @@ def eval_config(benchmark, model, par_type, run)
     puts "Estimated remaining time: #{(est_remaining_time / 3600).round(2)} hours (#{remaining_experiments} experiments left)"
 end
 
-# Experiment
+# Experiment ##################################################################################################################################################
 
 NUM_RUNS.times do |run|
     PAR_TYPES_TO_EVAL.each do |par_type|

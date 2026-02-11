@@ -1,4 +1,4 @@
-require 'fileutils'
+require_relative "general"
 
 # General configuration / information
 
@@ -37,13 +37,6 @@ BASE_COST_PER_REQUEST = 0.04 # base cost in dollars for github copilot requests,
 
 PARAMS = "--allow-all-paths --allow-all-tools --no-ask-user --no-color"
 
-PAR_OMP = "omp"
-PAR_CUDA = "cuda"
-PAR_MPI = "mpi"
-PAR_HYBRID = "hybrid"
-
-PARALLELIZATION_TYPES = [PAR_OMP, PAR_CUDA, PAR_MPI, PAR_HYBRID]
-
 INSTRUCTION_START = "Parallelize the %%1 benchmark code found in $$2 "
 
 PAR_TYPE_INSTRUCTIONS = {
@@ -55,8 +48,8 @@ PAR_TYPE_INSTRUCTIONS = {
 
 INSTRUCTION_END = 
 """
-The program should be optimized for maximum performance and scalability, while maintaining correctness and equivalent semantics to the original code.
-Change the code in the existing files only; do not create new files. Update CMakeLists as needed to ensure the code compiles and runs correctly.
+The program should be optimized for maximum performance and parallel scalability, while maintaining correctness and equivalent semantics to the original code.
+Change the code in the existing files only, and do not change the executable name; do not create new files. Update CMakeLists as needed to ensure the code compiles and runs correctly.
 Use no new external dependencies.
 """
 
@@ -87,9 +80,9 @@ puts "Running in #{TESTING ? "testing" : "production"} mode, with #{DO_RUN ? "ac
 # Evaluation configuration ####################################################################################################################################
 
 if TESTING
-    BENCHMARKS_TO_EVAL = ["black-scholes", "matmul", "nbody", "qtclustering"]
+    BENCHMARKS_TO_EVAL = ["black-scholes", "nbody"]
     MODELS_TO_EVAL = ["gpt-5-mini", "gpt-4.1"]
-    PAR_TYPES_TO_EVAL = [PAR_OMP, PAR_CUDA]
+    PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 else
     BENCHMARKS_TO_EVAL = BENCHMARKS

@@ -41,9 +41,9 @@ INSTRUCTION_START = "Parallelize the %%1 benchmark code found in $$2 "
 
 PAR_TYPE_INSTRUCTIONS = {
   PAR_OMP => "with OpenMP for multicore CPU shared memory parallelism.",
-  PAR_CUDA => "with CUDA for GPU acceleration.",
-  PAR_MPI => "with MPI for distributed cluster computing.",
-  PAR_HYBRID => "with a hybrid approach combining MPI, OpenMP, and CUDA as appropriate for maximum performance on an accelerator cluster."
+  PAR_CUDA => "with CUDA for GPU parallelism.",
+  PAR_MPI => "with MPI for distributed memory cluster parallelism.",
+  PAR_HYBRID => "with a hybrid approach combining MPI, OpenMP, and CUDA as appropriate for maximum parallel performance on an accelerator cluster."
 }
 
 INSTRUCTION_END = 
@@ -80,13 +80,13 @@ puts "Running in #{TESTING ? "testing" : "production"} mode, with #{DO_RUN ? "ac
 # Evaluation configuration ####################################################################################################################################
 
 if TESTING
-    BENCHMARKS_TO_EVAL = ["black-scholes", "nbody"]
+    BENCHMARKS_TO_EVAL = BENCHMARKS # ["black-scholes", "nbody"]
     MODELS_TO_EVAL = ["gpt-5-mini", "gpt-4.1"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 else
     BENCHMARKS_TO_EVAL = BENCHMARKS
-    MODELS_TO_EVAL = ["claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.6", "gemini-3-pro-preview", "gpt-5.2-codex", "gpt-5.2", "gpt-5-mini"]
+    MODELS_TO_EVAL = ["claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.6", "gemini-3-pro-preview", "gpt-5.2-codex", "gpt-5.2", "gpt-5-mini", "gpt-4.1"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 end

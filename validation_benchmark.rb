@@ -5,8 +5,9 @@ BENCH_SOURCE = "../benchmarks"
 
 EXPERIMENT_PATH = ARGV.find { |arg| arg.start_with?("--exp=") }&.split("=")&.last
 
-VALIDATION_BUILD_ROOT_DEFAULT = File.expand_path("~/llm_para_validation/")
-VALIDATION_BUILD_ROOT = ARGV.find { |arg| arg.start_with?("--validation-dir=") }&.split("=")&.last || VALIDATION_BUILD_ROOT_DEFAULT
+TIMESTAMP = Time.now.strftime("%Y%m%d-%H%M%S")
+VALIDATION_DIR_DEFAULT = File.join(File.expand_path("~/llm_para_validation/"), "#{TIMESTAMP}")
+VALIDATION_DIR = ARGV.find { |arg| arg.start_with?("--validation-dir=") }&.split("=")&.last || VALIDATION_DIR_DEFAULT
 
 REUSE_REFERENCE_DIR = ARGV.find { |arg| arg.start_with?("--reuse-ref=") }&.split("=")&.last
 
@@ -14,7 +15,7 @@ if EXPERIMENT_PATH.nil? || ARGV.include?("--help")
     puts "Usage: ruby validation_benchmark.rb"
     puts "Options:"
     puts "  --exp=EXPERIMENT_PATH       Path to the experiment results to validate (required)"
-    puts "  --validation-dir=DIR        Directory to use for validation builds and outputs (optional)"
+    puts "  --validation-dir=DIR        Directory to use for validation builds and outputs (optional, incrementally continues)"
     puts "  --reuse-ref=REF_DIR         Reuse reference outputs from the given directory instead of regenerating them (optional)"
     exit
 end
@@ -34,6 +35,8 @@ VALIDATION_SIZES = {
     "stencil3d" => "-x 64 -y 64 -z 64 -i 20",
     "unstructured" => "-n 256 -i 20"
 }
+
+VALIDATION_TIMEOUT = 30 # seconds, to prevent hanging during validation runs
 
 BENCHMARK_SIZES = {
     PAR_OMP => {
@@ -62,8 +65,6 @@ def id_string_to_infos(id_string)
     return benchmark, model, par_type, run
 end
 
-TIMESTAMP = Time.now.strftime("%Y%m%d-%H%M%S")
-VALIDATION_DIR = File.join(VALIDATION_BUILD_ROOT, "#{TIMESTAMP}")
 FileUtils.mkdir_p(VALIDATION_DIR)
 
 VALIDATION_FN = "validation_out"
@@ -103,6 +104,9 @@ def run_with_outputs_to_files(command, output_fn_prefix, timeout = nil)
         stdout_str, stderr_str, status = Open3.capture3(command)
         File.write(stdout_fn, stdout_str)
         File.write(stderr_fn, stderr_str)
+        if timeout && status == 124 # timeout exit code
+            raise "Command timed out after #{timeout} seconds."
+        end
         return status.success?
     rescue => e
         File.write(stderr_fn, e.message)
@@ -124,11 +128,13 @@ def benchmark_to_executable(benchmark)
     return benchmark.gsub("-", "_")
 end
 
-def perform_validation_run(benchmark, build_dir)
+def perform_validation_run(benchmark, build_dir, par_type)
+    mpirun = ""
+    mpirun = "mpirun -n 4 " if par_type == PAR_MPI || par_type == PAR_HYBRID
     Dir.chdir(build_dir) do
         executable = benchmark_to_executable(benchmark)
-        command = "./#{executable} #{VALIDATION_PARAMS} #{VALIDATION_SIZES[benchmark]}"
-        ret = run_with_outputs_to_files(command, VALIDATION_FN, 300)
+        command = "#{mpirun}./#{executable} #{VALIDATION_PARAMS} #{VALIDATION_SIZES[benchmark]}"
+        ret = run_with_outputs_to_files(command, VALIDATION_FN, VALIDATION_TIMEOUT)
         raise ("Validation run failed for #{benchmark} in #{Dir.pwd}. Check #{VALIDATION_FN}*.log for details.\n" +
                "Command: #{command}") unless ret
     end
@@ -138,24 +144,79 @@ def get_reference_output(benchmark)
     ref_dir = REUSE_REFERENCE_DIR || File.join(VALIDATION_DIR, "reference", benchmark)
     validation_fn = File.join(ref_dir, VALIDATION_FN + STDOUT_SUFFIX)
     if !File.directory?(ref_dir) || !File.exist?(validation_fn)
-        puts "Generating reference outputs for benchmark #{benchmark} in #{ref_dir}"
+        puts " -> Generating reference outputs for benchmark #{benchmark} in #{ref_dir}"
         build(File.expand_path(File.join(BENCH_SOURCE, benchmark)), ref_dir)
-        perform_validation_run(benchmark, ref_dir)
+        perform_validation_run(benchmark, ref_dir, nil)
     end
     return File.read(validation_fn)
 end
 
+puts "Starting validation:"
+puts "   - experiment results from #{EXPERIMENT_PATH}"
+puts "   - validation builds and outputs in #{VALIDATION_DIR}"
+puts
+
+class ValidationResult
+    attr_accessor :basic_para, :validation_build, :validation_run, :internal_validation, :output_comparison, :err_string
+    def initialize(benchmark, model, par_type, run)
+        @basic_para = false
+        @validation_build = false
+        @validation_run = false
+        @internal_validation = false
+        @output_comparison = false
+        @err_string = ""
+        @benchmark = benchmark
+        @model = model
+        @par_type = par_type
+        @run = run
+    end
+
+    # provide a one-line console summary with emojis for quick overview of which validation steps passed or failed
+    def summary
+        summary_str = "%12s | %10s | %6s | %d : " % [@benchmark, @model, @par_type, @run]
+        summary_str += @basic_para ? "✅ Para " : "❌ Para "
+        summary_str += @validation_build ? "✅ Build " : "❌ Build " if @basic_para
+        summary_str += @validation_run ? "✅ Run " : "❌ Run " if @validation_build
+        summary_str += @internal_validation ? "✅ Validation " : "❌ Validation " if @validation_run
+        summary_str += @output_comparison ? "✅ Comparison" : "❌ Comparison" if @internal_validation
+        return summary_str
+    end
+
+    def is_for(benchmark, model, par_type, run)
+        return @benchmark == benchmark && @model == model && @par_type == par_type && @run == run
+    end
+end
+
+$all_validation_results = []
+
+# reload existing validation results if we are continuing an existing validation run
+ALL_VALIDATION_RESULTS_FN = File.join(VALIDATION_DIR, "all_validation_results.yaml")
+if File.exist?(ALL_VALIDATION_RESULTS_FN)
+    puts "Loading existing validation results from #{ALL_VALIDATION_RESULTS_FN} to continue."
+    $all_validation_results = 
+        YAML.safe_load(File.read(ALL_VALIDATION_RESULTS_FN), permitted_classes: [ValidationResult], aliases: true) || []
+    puts " -> Loaded #{$all_validation_results.size} existing validation results."
+end
+
+# actual validation loop
 
 Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
     if File.directory?(entry)
         id_string = File.basename(entry)
         benchmark, model, par_type, run = id_string_to_infos(id_string)
-        next unless par_type == "omp"
-        
+        validation_result = ValidationResult.new(benchmark, model, par_type, run)
+
+        # skip if we already have a validation result for this configuration (for continuing existing runs)
+        if $all_validation_results.any? { |result| result.is_for(benchmark, model, par_type, run) }
+            puts "   - Skipping #{id_string} as validation result already exists."
+            next
+        end
+
         this_validation_dir = File.join(VALIDATION_DIR, id_string)
         FileUtils.mkdir_p(this_validation_dir)
         puts "Validating #{id_string} (benchmark: #{benchmark}, model: #{model}, par_type: #{par_type}, run: #{run})"
-        puts "  - Output to #{this_validation_dir}"
+        puts "   - Input from #{entry}"
+        puts "   - Output to #{this_validation_dir}"
         
         # get reference outputs
         ref_output = get_reference_output(benchmark)
@@ -163,40 +224,100 @@ Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
         validation_result_fn = File.join(this_validation_dir, VALIDATION_RESULT_FN)
         File.open(validation_result_fn, "w+") do |validation_result_file|
 
+            # basic textual validation of parallelization approach
+            detected_par_types = parallelization_detection(entry, benchmark)
+            expected_par_types = [par_type]
+            if par_type == PAR_HYBRID
+                expected_par_types = [PAR_OMP, PAR_CUDA, PAR_MPI]
+            end
+            if detected_par_types.empty?
+                validation_result.err_string = "Error during parallelization detection: No parallelization approach detected in source code."
+                validation_result_file.puts(validation_result.err_string)
+                next
+            end
+            if detected_par_types.any? { |detected| !expected_par_types.include?(detected) }
+                validation_result.err_string = "Error during parallelization detection: Detected parallelization approaches " +
+                    "#{detected_par_types} do not match expected approaches #{expected_par_types} for par_type #{par_type}."
+                validation_result_file.puts(validation_result.err_string)
+                next
+            end
+            validation_result.basic_para = true
+            validation_result_file.puts "Parallelization detection PASSED: Detected parallelization approaches #{detected_par_types}."
+
             # perform validation build
             begin
                 build(File.join(entry, benchmark), this_validation_dir)
             rescue => e
-                validation_result_file.puts "Error during validation build:\n#{e.message}"
+                validation_result.err_string = "Error during validation build:\n#{e.message}"
+                validation_result_file.puts(validation_result.err_string)
                 next
             end
+            validation_result.validation_build = true
+            validation_result_file.puts "Validation build PASSED."
 
             # perform validation run
             begin
-                perform_validation_run(benchmark, this_validation_dir)
+                perform_validation_run(benchmark, this_validation_dir, par_type)
             rescue => e
-                validation_result_file.puts "Error during validation run:\n#{e.message}"
+                validation_result.err_string = "Error during validation run:\n#{e.message}"
+                validation_result_file.puts(validation_result.err_string)
                 next
             end
+            validation_result.validation_run = true
+            validation_result_file.puts "Validation run PASSED."
 
             # check internal validation ("Validation: PASSED" in the output)
             validation_output = File.read(File.join(this_validation_dir, VALIDATION_FN + STDOUT_SUFFIX))
-            if validation_output.include?("Validation: PASSED")
-                validation_result_file.puts "Internal validation PASSED"
-            else
-                validation_result_file.puts "Internal validation FAILED"
+            if !validation_output.include?("Validation: PASSED")
+                validation_result.err_string = "Internal validation FAILED: Output does not contain 'Validation: PASSED'."
+                validation_result_file.puts(validation_result.err_string)
                 next
             end
+            validation_result.internal_validation = true
+            validation_result_file.puts "Internal validation PASSED."
 
             # compare output with reference output
-            validation_result = validate(ref_output, validation_output)
-            if validation_result[0]
-                validation_result_file.puts "Validation PASSED:\n#{validation_result[1]}"
-            else
-                validation_result_file.puts "Validation FAILED:\n#{validation_result[1]}"
+            comparison_result = validate(ref_output, validation_output)
+            if comparison_result[0] == false
+                validation_result.err_string = "Output comparison FAILED:\n#{comparison_result[1]}"
+                validation_result_file.puts(validation_result.err_string)
             end
+            validation_result.output_comparison = true
+            validation_result_file.puts "Output comparison PASSED:\n#{comparison_result[1]}"
         end
     end
-    exit
+    puts validation_result.summary
     puts
+
+    $all_validation_results << validation_result
+    
+    # serialize the results accumulated so far to be able to resume an interrupted validation run
+    File.open(ALL_VALIDATION_RESULTS_FN, "w") do |f|
+        f.write(YAML.dump($all_validation_results))
+    end
 end
+
+# Statistics about the validation results
+
+basic_para_count = 0
+validation_build_count = 0
+validation_run_count = 0
+internal_validation_count = 0
+output_comparison_count = 0
+$all_validation_results.each do |result|
+    basic_para_count += 1 if result.basic_para
+    validation_build_count += 1 if result.validation_build
+    validation_run_count += 1 if result.validation_run
+    internal_validation_count += 1 if result.internal_validation
+    output_comparison_count += 1 if result.output_comparison
+end
+
+puts "Validation complete. Results available in #{ALL_VALIDATION_RESULTS_FN}."
+puts "Summary of validation results:"
+puts "   - Total configurations validated: #{$all_validation_results.size}"
+puts "   - Basic parallelization detection passed: #{basic_para_count} / #{$all_validation_results.size} (#{(basic_para_count.to_f / $all_validation_results.size * 100).round(2)}%)"
+puts "   - Validation build passed: #{validation_build_count} / #{$all_validation_results.size} (#{(validation_build_count.to_f / $all_validation_results.size * 100).round(2)}%)"
+puts "   - Validation run passed: #{validation_run_count} / #{$all_validation_results.size} (#{(validation_run_count.to_f / $all_validation_results.size * 100).round(2)}%)"
+puts "   - Internal validation passed: #{internal_validation_count} / #{$all_validation_results.size} (#{(internal_validation_count.to_f / $all_validation_results.size * 100).round(2)}%)"
+puts "   - Output comparison passed: #{output_comparison_count} / #{$all_validation_results.size} (#{(output_comparison_count.to_f / $all_validation_results.size * 100).round(2)}%)"
+

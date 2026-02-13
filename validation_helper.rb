@@ -1,3 +1,25 @@
+
+## helper for parallelization validation
+
+# perform simple textual detection of parallelization approach
+# returns a subset of {PAR_OMP, PAR_CUDA, PAR_MPI} that are detected in the source code
+def parallelization_detection(source_dir, benchmark)
+    # read the source file
+    source = File.read(File.join(source_dir, benchmark, benchmark_to_executable(benchmark) + ".cpp"))
+
+    # check for parallelization-specific keywords
+    omp_check = source.include?("#pragma omp")
+    cuda_check = (source.include?("cuda.h") || source.include?("cuda_runtime.h")) &&
+                  source.include?("<<<") && source.include?(">>>")
+    mpi_check = source.include?("MPI_Init") && source.include?("MPI_Finalize") &&
+                source.include?("MPI_Comm_rank") && source.include?("MPI_Comm_size")
+    ret = []
+    ret << PAR_OMP if omp_check
+    ret << PAR_CUDA if cuda_check
+    ret << PAR_MPI if mpi_check
+    return ret
+end
+
 ## Helper for valdiating two outputs against each other
 
 # General shape:

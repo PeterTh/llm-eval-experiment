@@ -110,10 +110,6 @@ end
 
 # Experiment helpers ##########################################################################################################################################
 
-def run_id_string(benchmark, model, par_type, run)
-    return "#{benchmark}_#{model}_#{par_type}_r#{run}"
-end
-
 def prepare_folder(benchmark, model, par_type, run)
     id = run_id_string(benchmark, model, par_type, run)
     # Create a folder for the run

@@ -38,95 +38,9 @@ VALIDATION_SIZES = {
 
 VALIDATION_TIMEOUT = 30 # seconds, to prevent hanging during validation runs
 
-BENCHMARK_SIZES = {
-    PAR_OMP => {
-        "black-scholes" => "-n 10000000",
-        "cahn-hilliard" => "-x 128 -y 128 -z 128 -i 100",
-        "cholesky" => "-n 2048",
-        "floydwarshall" => "-n 2048",
-        "matmul" => "-n 2048",
-        "nbody" => "-n 100000 -s 100",
-        "qtclustering" => "-n 10000",
-        "roomsim" => "-n 512 -t 500",
-        "spmv" => "-n 32000 -s 100 -i 100",
-        "stencil3d" => "-x 128 -y 128 -z 128 -i 100",
-        "unstructured" => "-n 512 -i 100"
-    },
-}
-
-
-def id_string_to_infos(id_string)
-    # id string format: benchmark_model_par_type_rX
-    parts = id_string.split("_")
-    benchmark = parts[0]
-    model = parts[1]
-    par_type = parts[2]
-    run = parts[3][1..-1].to_i # remove 'r' and convert to int
-    return benchmark, model, par_type, run
-end
-
 FileUtils.mkdir_p(VALIDATION_DIR)
 
 VALIDATION_FN = "validation_out"
-VALIDATION_RESULT_FN = "validation_result.txt"
-
-STDOUT_SUFFIX = "_stdout.log"
-STDERR_SUFFIX = "_stderr.log"
-
-BENCHMARK_COUNT = 5
-BENCHMARK_OUT_PREFIX = "benchmark_"
-
-BENCHMARK_PERF_DATA = {
-    "black-scholes" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Options per second: (?<val>\d+(\.\d+)?)/]],
-    "cahn-hilliard" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) MCellUpdates\/s/]],
-    "cholesky" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) GFLOPS/]],
-    "floydwarshall" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) GOPS/]],
-    "matmul" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) GFLOPS/]],
-    "nbody" => [["time", /Simulation time: (?<val>\d+(\.\d+)?) ms/]],
-    "qtclustering" => [["time", /Clustering time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (\d+(\.\d+)?) clusters\/s, (?<val>\d+(\.\d+)?) points\/s/]],
-    "roomsim" => [
-        ["precomp_time", /Precomputation time: (?<val>\d+(\.\d+)?) ms/], 
-        ["sim_time", /Simulation time: (?<val>\d+(\.\d+)?) ms/], 
-        ["dist_time" , /Distance computation time: (?<val>\d+(\.\d+)?) ms/], 
-        ["tot_time", /Total computation time: (?<val>\d+(\.\d+)?) ms/],
-    ],
-    "spmv" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) GFLOPS\/s/]],
-    "stencil3d" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) MCellUpdates\/s/]],
-    "unstructured" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Elements\/sec: (?<val>\d+(\.\d+)?) GigaElements\/s/]],
-}
-
-def run_with_outputs_to_files(command, output_fn_prefix, timeout = nil)
-    # use Capture3 to capture stdout and stderr separately, and write them to files with the given prefix
-    stdout_fn = "#{output_fn_prefix}#{STDOUT_SUFFIX}"
-    stderr_fn = "#{output_fn_prefix}#{STDERR_SUFFIX}"
-    begin
-        command = "timeout #{timeout} #{command}" if timeout
-        stdout_str, stderr_str, status = Open3.capture3(command)
-        File.write(stdout_fn, stdout_str)
-        File.write(stderr_fn, stderr_str)
-        if timeout && status == 124 # timeout exit code
-            raise "Command timed out after #{timeout} seconds."
-        end
-        return status.success?
-    rescue => e
-        File.write(stderr_fn, e.message)
-        return false
-    end
-end
-
-def build(src_dir, build_dir)
-    FileUtils.mkdir_p(build_dir)
-    Dir.chdir(build_dir) do
-        ret = run_with_outputs_to_files("cmake #{src_dir} -B #{build_dir} -DCMAKE_BUILD_TYPE=Release", "cmake")
-        raise "Configure failed for #{src_dir}. See #{File.join(build_dir, "cmake_*.log")} for details." unless ret
-        ret = run_with_outputs_to_files("cmake --build #{build_dir} --target all --", "build")
-        raise "Build failed for #{src_dir}. See #{File.join(build_dir, "build_*.log")} for details." unless ret
-    end
-end
-
-def benchmark_to_executable(benchmark)
-    return benchmark.gsub("-", "_")
-end
 
 def perform_validation_run(benchmark, build_dir, par_type)
     mpirun = ""
@@ -203,6 +117,7 @@ end
 Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
     if File.directory?(entry)
         id_string = File.basename(entry)
+        next unless is_id_string?(id_string)
         benchmark, model, par_type, run = id_string_to_infos(id_string)
         validation_result = ValidationResult.new(benchmark, model, par_type, run)
 

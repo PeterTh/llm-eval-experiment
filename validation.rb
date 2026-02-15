@@ -11,8 +11,8 @@ VALIDATION_DIR = ARGV.find { |arg| arg.start_with?("--validation-dir=") }&.split
 
 REUSE_REFERENCE_DIR = ARGV.find { |arg| arg.start_with?("--reuse-ref=") }&.split("=")&.last
 
-if EXPERIMENT_PATH.nil? || ARGV.include?("--help")
-    puts "Usage: ruby validation_benchmark.rb"
+if EXPERIMENT_PATH.nil? || ARGV.include?("--help") || ARGV.include?("-h")
+    puts "Usage: ruby validation_benchmark.rb [options]"
     puts "Options:"
     puts "  --exp=EXPERIMENT_PATH       Path to the experiment results to validate (required)"
     puts "  --validation-dir=DIR        Directory to use for validation builds and outputs (optional, incrementally continues)"
@@ -21,6 +21,11 @@ if EXPERIMENT_PATH.nil? || ARGV.include?("--help")
 end
 
 VALIDATION_PARAMS = "-v -r"
+VALIDATION_PARAMS_ROOMSIM = "-v -o"
+
+def get_validation_params(benchmark)
+    return benchmark == "roomsim" ? VALIDATION_PARAMS_ROOMSIM : VALIDATION_PARAMS
+end
 
 VALIDATION_SIZES = {
     "black-scholes" => "-n 10000",
@@ -47,7 +52,7 @@ def perform_validation_run(benchmark, build_dir, par_type)
     mpirun = "mpirun -n 4 " if par_type == PAR_MPI || par_type == PAR_HYBRID
     Dir.chdir(build_dir) do
         executable = benchmark_to_executable(benchmark)
-        command = "#{mpirun}./#{executable} #{VALIDATION_PARAMS} #{VALIDATION_SIZES[benchmark]}"
+        command = "#{mpirun}./#{executable} #{get_validation_params(benchmark)} #{VALIDATION_SIZES[benchmark]}"
         ret = run_with_outputs_to_files(command, VALIDATION_FN, VALIDATION_TIMEOUT)
         raise ("Validation run failed for #{benchmark} in #{Dir.pwd}. Check #{VALIDATION_FN}*.log for details.\n" +
                "Command: #{command}") unless ret
@@ -140,19 +145,25 @@ Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
         File.open(validation_result_fn, "w+") do |validation_result_file|
 
             # basic textual validation of parallelization approach
-            detected_par_types = parallelization_detection(entry, benchmark)
-            expected_par_types = [par_type]
-            if par_type == PAR_HYBRID
-                expected_par_types = [PAR_OMP, PAR_CUDA, PAR_MPI]
-            end
-            if detected_par_types.empty?
-                validation_result.err_string = "Error during parallelization detection: No parallelization approach detected in source code."
-                validation_result_file.puts(validation_result.err_string)
-                next
-            end
-            if detected_par_types.any? { |detected| !expected_par_types.include?(detected) }
-                validation_result.err_string = "Error during parallelization detection: Detected parallelization approaches " +
-                    "#{detected_par_types} do not match expected approaches #{expected_par_types} for par_type #{par_type}."
+            begin
+                detected_par_types = parallelization_detection(entry, benchmark)
+                expected_par_types = [par_type]
+                if par_type == PAR_HYBRID
+                    expected_par_types = [PAR_OMP, PAR_CUDA, PAR_MPI]
+                end
+                if detected_par_types.empty?
+                    validation_result.err_string = "Error during parallelization detection: No parallelization approach detected in source code."
+                    validation_result_file.puts(validation_result.err_string)
+                    next
+                end
+                if detected_par_types.any? { |detected| !expected_par_types.include?(detected) }
+                    validation_result.err_string = "Error during parallelization detection: Detected parallelization approaches " +
+                        "#{detected_par_types} do not match expected approaches #{expected_par_types} for par_type #{par_type}."
+                    validation_result_file.puts(validation_result.err_string)
+                    next
+                end
+            rescue => e
+                validation_result.err_string = "Error during parallelization detection:\n#{e.message}"
                 validation_result_file.puts(validation_result.err_string)
                 next
             end
@@ -161,7 +172,11 @@ Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
 
             # perform validation build
             begin
-                build(File.join(entry, benchmark), this_validation_dir)
+                build_dir = File.join(entry, benchmark)
+                # reuse existing build if it exists to save time, otherwise build
+                if !File.exist?(File.join(build_dir, benchmark_to_executable(benchmark)))
+                    build(File.join(entry, benchmark), this_validation_dir)
+                end
             rescue => e
                 validation_result.err_string = "Error during validation build:\n#{e.message}"
                 validation_result_file.puts(validation_result.err_string)
@@ -183,7 +198,7 @@ Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
 
             # check internal validation ("Validation: PASSED" in the output)
             validation_output = File.read(File.join(this_validation_dir, VALIDATION_FN + STDOUT_SUFFIX))
-            if !validation_output.include?("Validation: PASSED")
+            if validation_output.include?("Validation: FAILED") || !validation_output.include?("Validation: PASSED")
                 validation_result.err_string = "Internal validation FAILED: Output does not contain 'Validation: PASSED'."
                 validation_result_file.puts(validation_result.err_string)
                 next
@@ -196,6 +211,7 @@ Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
             if comparison_result[0] == false
                 validation_result.err_string = "Output comparison FAILED:\n#{comparison_result[1]}"
                 validation_result_file.puts(validation_result.err_string)
+                next
             end
             validation_result.output_comparison = true
             validation_result_file.puts "Output comparison PASSED:\n#{comparison_result[1]}"

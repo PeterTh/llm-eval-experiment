@@ -47,7 +47,14 @@ def validate(ref_output, validation_output)
         end
     end
     ref_results = get_output.call(ref_output)
+    if ref_results.is_a?(Array) && ref_results[0] == false
+        puts "!!! REFERENCE OUTPUT BROKEN !!!"
+        exit 1
+    end
     validation_results = get_output.call(validation_output)
+    if validation_results.is_a?(Array) && validation_results[0] == false
+        return validation_results
+    end
 
     # iterate over each object
     ref_objects = ref_results.split("Name: ").drop(1) # split by object and drop the first empty part

@@ -47,11 +47,15 @@ def run_with_outputs_to_files(command, output_fn_prefix, timeout = nil, env = {}
     # use Capture3 to capture stdout and stderr separately, and write them to files with the given prefix
     stdout_fn = "#{output_fn_prefix}#{STDOUT_SUFFIX}"
     stderr_fn = "#{output_fn_prefix}#{STDERR_SUFFIX}"
+    command_fn = "#{output_fn_prefix}_command.log"
+    exitcode_fn = "#{output_fn_prefix}_exitcode.log"
+    File.write(command_fn, command)
     begin
         command = "timeout #{timeout} #{command}" if timeout
         stdout_str, stderr_str, status = Open3.capture3(env, command)
         File.write(stdout_fn, stdout_str)
         File.write(stderr_fn, stderr_str)
+        File.write(exitcode_fn, status.exitstatus.to_s)
         if timeout && status == 124 # timeout exit code
             raise "Command timed out after #{timeout} seconds."
         end

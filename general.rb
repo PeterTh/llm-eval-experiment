@@ -57,7 +57,7 @@ def run_with_outputs_to_files(command, output_fn_prefix, timeout = nil, env = {}
         File.write(stderr_fn, stderr_str)
         File.write(exitcode_fn, status.exitstatus.to_s)
         if timeout && status == 124 # timeout exit code
-            raise "Command timed out after #{timeout} seconds."
+            File.write(stderr_fn, "Command timed out after #{timeout} seconds.")
         end
         return status.success?
     rescue => e

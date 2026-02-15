@@ -117,14 +117,116 @@ if File.exist?(ALL_VALIDATION_RESULTS_FN)
     puts " -> Loaded #{$all_validation_results.size} existing validation results."
 end
 
-# actual validation loop
+# actual validation
+
+def validate_experiment(entry, id_string, benchmark, model, par_type, run)
+    validation_result = ValidationResult.new(benchmark, model, par_type, run)
+
+    this_validation_dir = File.join(VALIDATION_DIR, id_string)
+    FileUtils.mkdir_p(this_validation_dir)
+    puts "Validating #{id_string} (benchmark: #{benchmark}, model: #{model}, par_type: #{par_type}, run: #{run})"
+    puts "   - Input from #{entry}"
+    puts "   - Output to #{this_validation_dir}"
+    
+    # get reference outputs
+    ref_output = get_reference_output(benchmark)
+
+    validation_result_fn = File.join(this_validation_dir, VALIDATION_RESULT_FN)
+    File.open(validation_result_fn, "w+") do |validation_result_file|
+
+        # basic textual validation of parallelization approach
+        begin
+            detected_par_types = parallelization_detection(entry, benchmark)
+            expected_par_types = [par_type]
+            if par_type == PAR_HYBRID
+                expected_par_types = [PAR_OMP, PAR_CUDA, PAR_MPI]
+            end
+            if detected_par_types.empty?
+                validation_result.err_string = "Error during parallelization detection: No parallelization approach detected in source code."
+                validation_result_file.puts(validation_result.err_string)
+                return validation_result
+            end
+            if detected_par_types.any? { |detected| !expected_par_types.include?(detected) }
+                validation_result.err_string = "Error during parallelization detection: Detected parallelization approaches " +
+                    "#{detected_par_types} do not match expected approaches #{expected_par_types} for par_type #{par_type}."
+                validation_result_file.puts(validation_result.err_string)
+                return validation_result
+            end
+        rescue => e
+            validation_result.err_string = "Error during parallelization detection:\n#{e.message}"
+            validation_result_file.puts(validation_result.err_string)
+            return validation_result
+        end
+        validation_result.basic_para = true
+        validation_result_file.puts "Parallelization detection PASSED: Detected parallelization approaches #{detected_par_types}."
+
+        # perform validation build
+        begin
+            build_dir = File.join(entry, benchmark)
+            build(build_dir, this_validation_dir)
+        rescue => e
+            validation_result.err_string = "Error during validation build:\n#{e.message}"
+            validation_result_file.puts(validation_result.err_string)
+            return validation_result
+        end
+        validation_result.validation_build = true
+        validation_result_file.puts "Validation build PASSED."
+
+        # perform validation run
+        begin
+            perform_validation_run(benchmark, this_validation_dir, par_type)
+        rescue => e
+            # some benchmarks return non-zero if their internal validation fails, but in that case we want to continue
+            # check if the output exists and contains a validation failure to detect this case
+            ran_but_failed_validation = lambda do
+                validation_output_path = File.join(this_validation_dir, VALIDATION_FN + STDOUT_SUFFIX)
+                if File.exist?(validation_output_path)
+                    validation_output = File.read(validation_output_path)
+                    if validation_output.include?("Validation: FAILED") || validation_output.include?("Validation fail")
+                        return true
+                    end
+                end
+                return false
+            end
+            if !ran_but_failed_validation.call()
+                validation_result.err_string = "Error during validation run:\n#{e.message}"
+                validation_result_file.puts(validation_result.err_string)
+                return validation_result
+            end
+        end
+        validation_result.validation_run = true
+        validation_result_file.puts "Validation run PASSED."
+
+        # check internal validation ("Validation: PASSED" in the output)
+        validation_output = File.read(File.join(this_validation_dir, VALIDATION_FN + STDOUT_SUFFIX))
+        if validation_output.include?("Validation: FAILED") || validation_output.include?("Validation fail") || !validation_output.include?("Validation: PASSED")
+            validation_result.err_string = "Internal validation FAILED."
+            validation_result_file.puts(validation_result.err_string)
+            return validation_result
+        end
+        validation_result.internal_validation = true
+        validation_result_file.puts "Internal validation PASSED."
+
+        # compare output with reference output
+        comparison_result = validate(ref_output, validation_output)
+        if comparison_result[0] == false
+            validation_result.err_string = "Output comparison FAILED:\n#{comparison_result[1]}"
+            validation_result_file.puts(validation_result.err_string)
+            return validation_result
+        end
+        validation_result.output_comparison = true
+        validation_result_file.puts "Output comparison PASSED:\n#{comparison_result[1]}"
+    end
+    return validation_result
+end
 
 Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
     if File.directory?(entry)
         id_string = File.basename(entry)
         next unless is_id_string?(id_string)
         benchmark, model, par_type, run = id_string_to_infos(id_string)
-        validation_result = ValidationResult.new(benchmark, model, par_type, run)
+
+        next unless benchmark == "cholesky" # TEMPORARY for testing only benchmark cholesky
 
         # skip if we already have a validation result for this configuration (for continuing existing runs)
         if $all_validation_results.any? { |result| result.is_for(benchmark, model, par_type, run) }
@@ -132,99 +234,17 @@ Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
             next
         end
 
-        this_validation_dir = File.join(VALIDATION_DIR, id_string)
-        FileUtils.mkdir_p(this_validation_dir)
-        puts "Validating #{id_string} (benchmark: #{benchmark}, model: #{model}, par_type: #{par_type}, run: #{run})"
-        puts "   - Input from #{entry}"
-        puts "   - Output to #{this_validation_dir}"
+        validation_result = validate_experiment(entry, id_string, benchmark, model, par_type, run)
+
+        puts validation_result.summary
+        puts
+
+        $all_validation_results << validation_result
         
-        # get reference outputs
-        ref_output = get_reference_output(benchmark)
-
-        validation_result_fn = File.join(this_validation_dir, VALIDATION_RESULT_FN)
-        File.open(validation_result_fn, "w+") do |validation_result_file|
-
-            # basic textual validation of parallelization approach
-            begin
-                detected_par_types = parallelization_detection(entry, benchmark)
-                expected_par_types = [par_type]
-                if par_type == PAR_HYBRID
-                    expected_par_types = [PAR_OMP, PAR_CUDA, PAR_MPI]
-                end
-                if detected_par_types.empty?
-                    validation_result.err_string = "Error during parallelization detection: No parallelization approach detected in source code."
-                    validation_result_file.puts(validation_result.err_string)
-                    next
-                end
-                if detected_par_types.any? { |detected| !expected_par_types.include?(detected) }
-                    validation_result.err_string = "Error during parallelization detection: Detected parallelization approaches " +
-                        "#{detected_par_types} do not match expected approaches #{expected_par_types} for par_type #{par_type}."
-                    validation_result_file.puts(validation_result.err_string)
-                    next
-                end
-            rescue => e
-                validation_result.err_string = "Error during parallelization detection:\n#{e.message}"
-                validation_result_file.puts(validation_result.err_string)
-                next
-            end
-            validation_result.basic_para = true
-            validation_result_file.puts "Parallelization detection PASSED: Detected parallelization approaches #{detected_par_types}."
-
-            # perform validation build
-            begin
-                build_dir = File.join(entry, benchmark)
-                # reuse existing build if it exists to save time, otherwise build
-                if !File.exist?(File.join(build_dir, benchmark_to_executable(benchmark)))
-                    build(File.join(entry, benchmark), this_validation_dir)
-                end
-            rescue => e
-                validation_result.err_string = "Error during validation build:\n#{e.message}"
-                validation_result_file.puts(validation_result.err_string)
-                next
-            end
-            validation_result.validation_build = true
-            validation_result_file.puts "Validation build PASSED."
-
-            # perform validation run
-            begin
-                perform_validation_run(benchmark, this_validation_dir, par_type)
-            rescue => e
-                validation_result.err_string = "Error during validation run:\n#{e.message}"
-                validation_result_file.puts(validation_result.err_string)
-                next
-            end
-            validation_result.validation_run = true
-            validation_result_file.puts "Validation run PASSED."
-
-            # check internal validation ("Validation: PASSED" in the output)
-            validation_output = File.read(File.join(this_validation_dir, VALIDATION_FN + STDOUT_SUFFIX))
-            if validation_output.include?("Validation: FAILED") || !validation_output.include?("Validation: PASSED")
-                validation_result.err_string = "Internal validation FAILED: Output does not contain 'Validation: PASSED'."
-                validation_result_file.puts(validation_result.err_string)
-                next
-            end
-            validation_result.internal_validation = true
-            validation_result_file.puts "Internal validation PASSED."
-
-            # compare output with reference output
-            comparison_result = validate(ref_output, validation_output)
-            if comparison_result[0] == false
-                validation_result.err_string = "Output comparison FAILED:\n#{comparison_result[1]}"
-                validation_result_file.puts(validation_result.err_string)
-                next
-            end
-            validation_result.output_comparison = true
-            validation_result_file.puts "Output comparison PASSED:\n#{comparison_result[1]}"
+        # serialize the results accumulated so far to be able to resume an interrupted validation run
+        File.open(ALL_VALIDATION_RESULTS_FN, "w") do |f|
+            f.write(YAML.dump($all_validation_results))
         end
-    end
-    puts validation_result.summary
-    puts
-
-    $all_validation_results << validation_result
-    
-    # serialize the results accumulated so far to be able to resume an interrupted validation run
-    File.open(ALL_VALIDATION_RESULTS_FN, "w") do |f|
-        f.write(YAML.dump($all_validation_results))
     end
 end
 

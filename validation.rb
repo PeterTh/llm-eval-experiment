@@ -13,6 +13,8 @@ REUSE_REFERENCE_DIR = ARGV.find { |arg| arg.start_with?("--reuse-ref=") }&.split
 
 FULL_STATS = ARGV.include?("--full-stats")
 
+ID_FILTER = ARGV.find { |arg| arg.start_with?("--id-filter=") }&.split("=")&.last # for testing, only validate configurations whose id string includes this filter string
+
 if EXPERIMENT_PATH.nil? || ARGV.include?("--help") || ARGV.include?("-h")
     puts "Usage: ruby validation_benchmark.rb [options]"
     puts "Options:"
@@ -20,6 +22,7 @@ if EXPERIMENT_PATH.nil? || ARGV.include?("--help") || ARGV.include?("-h")
     puts "  --validation-dir=DIR        Directory to use for validation builds and outputs (optional, incrementally continues)"
     puts "  --reuse-ref=REF_DIR         Reuse reference outputs from the given directory instead of regenerating them (optional)"
     puts "  --full-stats                Print detailed statistics about validation results (optional)"
+    puts "  --id-filter=FILTER_STR      Only validate configurations whose id string includes the given filter string (optional, for testing)"
     exit
 end
 
@@ -236,7 +239,7 @@ Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
         id_string = File.basename(entry)
         next unless is_id_string?(id_string)
 
-        # next unless id_string == "matmul_gpt-4.1_omp_r1" # for testing only a single configuration
+        next unless ID_FILTER.nil? || id_string.include?(ID_FILTER)
 
         benchmark, model, par_type, run = id_string_to_infos(id_string)
 

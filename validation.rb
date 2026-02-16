@@ -11,12 +11,15 @@ VALIDATION_DIR = ARGV.find { |arg| arg.start_with?("--validation-dir=") }&.split
 
 REUSE_REFERENCE_DIR = ARGV.find { |arg| arg.start_with?("--reuse-ref=") }&.split("=")&.last
 
+FULL_STATS = ARGV.include?("--full-stats")
+
 if EXPERIMENT_PATH.nil? || ARGV.include?("--help") || ARGV.include?("-h")
     puts "Usage: ruby validation_benchmark.rb [options]"
     puts "Options:"
     puts "  --exp=EXPERIMENT_PATH       Path to the experiment results to validate (required)"
     puts "  --validation-dir=DIR        Directory to use for validation builds and outputs (optional, incrementally continues)"
     puts "  --reuse-ref=REF_DIR         Reuse reference outputs from the given directory instead of regenerating them (optional)"
+    puts "  --full-stats                Print detailed statistics about validation results (optional)"
     exit
 end
 
@@ -50,10 +53,12 @@ VALIDATION_FN = "validation_out"
 def perform_validation_run(benchmark, build_dir, par_type)
     mpirun = ""
     mpirun = "mpirun -n 4 " if par_type == PAR_MPI || par_type == PAR_HYBRID
+    env = {}
+    env = { "OMP_NUM_THREADS" => "8" } if par_type == PAR_OMP || par_type == PAR_HYBRID
     Dir.chdir(build_dir) do
         executable = benchmark_to_executable(benchmark)
         command = "#{mpirun}./#{executable} #{get_validation_params(benchmark)} #{VALIDATION_SIZES[benchmark]}"
-        ret = run_with_outputs_to_files(command, VALIDATION_FN, VALIDATION_TIMEOUT)
+        ret = run_with_outputs_to_files(command, VALIDATION_FN, VALIDATION_TIMEOUT, env)
         raise ("Validation run failed for #{benchmark} in #{Dir.pwd}. Check #{VALIDATION_FN}*.log for details.\n" +
                "Command: #{command}") unless ret
     end
@@ -160,6 +165,12 @@ def validate_experiment(entry, id_string, benchmark, model, par_type, run)
         validation_result.basic_para = true
         validation_result_file.puts "Parallelization detection PASSED: Detected parallelization approaches #{detected_par_types}."
 
+        # rename CMakeCache if it exists to prevent CMake from reusing cached build params from the original experiment run
+        if File.exist?(File.join(entry, benchmark, "CMakeCache.txt"))
+            FileUtils.mv(File.join(entry, benchmark, "CMakeCache.txt"), File.join(entry, benchmark, "CMakeCache_backup.txt"))
+            validation_result_file.puts "Renamed CMakeCache.txt to CMakeCache_backup.txt prevent reuse of cached build params."
+        end
+
         # perform validation build
         begin
             build_dir = File.join(entry, benchmark)
@@ -224,9 +235,10 @@ Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
     if File.directory?(entry)
         id_string = File.basename(entry)
         next unless is_id_string?(id_string)
-        benchmark, model, par_type, run = id_string_to_infos(id_string)
 
-        next unless benchmark == "cholesky" # TEMPORARY for testing only benchmark cholesky
+        # next unless id_string == "matmul_gpt-4.1_omp_r1" # for testing only a single configuration
+
+        benchmark, model, par_type, run = id_string_to_infos(id_string)
 
         # skip if we already have a validation result for this configuration (for continuing existing runs)
         if $all_validation_results.any? { |result| result.is_for(benchmark, model, par_type, run) }
@@ -272,3 +284,40 @@ puts "   - Validation run passed: #{validation_run_count} / #{$all_validation_re
 puts "   - Internal validation passed: #{internal_validation_count} / #{$all_validation_results.size} (#{(internal_validation_count.to_f / $all_validation_results.size * 100).round(2)}%)"
 puts "   - Output comparison passed: #{output_comparison_count} / #{$all_validation_results.size} (#{(output_comparison_count.to_f / $all_validation_results.size * 100).round(2)}%)"
 
+exit unless FULL_STATS
+
+puts "\nPer-benchmark numbers:"
+puts "Benchmark, invalid, para, built, ran, internal, valid"
+$all_validation_results.group_by { |result| result.instance_variable_get(:@benchmark) }.each do |benchmark, results|
+    invalid_count = results.size
+    basic_para_count = results.count { |r| r.basic_para }
+    validation_build_count = results.count { |r| r.validation_build }
+    validation_run_count = results.count { |r| r.validation_run }
+    internal_validation_count = results.count { |r| r.internal_validation }
+    output_comparison_count = results.count { |r| r.output_comparison }
+    puts "#{benchmark}, #{invalid_count - basic_para_count}, #{basic_para_count - validation_build_count}, #{validation_build_count - validation_run_count}, #{validation_run_count - internal_validation_count}, #{internal_validation_count - output_comparison_count}, #{output_comparison_count}"
+end
+
+puts "\nPer parallelization type numbers:"
+puts "Partype, invalid, para, built, ran, internal, valid"
+$all_validation_results.group_by { |result| result.instance_variable_get(:@par_type) }.each do |par_type, results|
+    invalid_count = results.size
+    basic_para_count = results.count { |r| r.basic_para }
+    validation_build_count = results.count { |r| r.validation_build }
+    validation_run_count = results.count { |r| r.validation_run }
+    internal_validation_count = results.count { |r| r.internal_validation }
+    output_comparison_count = results.count { |r| r.output_comparison }
+    puts "#{par_type}, #{invalid_count - basic_para_count}, #{basic_para_count - validation_build_count}, #{validation_build_count - validation_run_count}, #{validation_run_count - internal_validation_count}, #{internal_validation_count - output_comparison_count}, #{output_comparison_count}"
+end
+
+puts "\nPer model numbers:"
+puts "Model, invalid, para, built, ran, internal, valid"
+$all_validation_results.group_by { |result| result.instance_variable_get(:@model) }.each do |model, results|
+    invalid_count = results.size
+    basic_para_count = results.count { |r| r.basic_para }
+    validation_build_count = results.count { |r| r.validation_build }
+    validation_run_count = results.count { |r| r.validation_run }
+    internal_validation_count = results.count { |r| r.internal_validation }
+    output_comparison_count = results.count { |r| r.output_comparison }
+    puts "#{model}, #{invalid_count - basic_para_count}, #{basic_para_count - validation_build_count}, #{validation_build_count - validation_run_count}, #{validation_run_count - internal_validation_count}, #{internal_validation_count - output_comparison_count}, #{output_comparison_count}"
+end

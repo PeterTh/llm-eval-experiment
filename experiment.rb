@@ -43,19 +43,20 @@ PAR_TYPE_INSTRUCTIONS = {
   PAR_OMP => "with OpenMP for multicore CPU shared memory parallelism.",
   PAR_CUDA => "with CUDA for GPU parallelism.",
   PAR_MPI => "with MPI for distributed memory cluster parallelism.",
-  PAR_HYBRID => "with a hybrid approach combining MPI, OpenMP, and CUDA as appropriate for maximum parallel performance on an accelerator cluster."
+  PAR_HYBRID => "with a hybrid approach combining MPI, OpenMP, and CUDA as appropriate for the problem for maximum parallel performance on an accelerator cluster."
 }
 
 INSTRUCTION_END = 
 """
 The program should be optimized for maximum performance and parallel scalability, while maintaining correctness and equivalent semantics to the original code.
-Change the code in the existing files only, and do not change the executable name; do not create new files. Update CMakeLists as needed to ensure the code compiles and runs correctly.
-Use no new external dependencies.
+Change the code in the existing files only, and do not change the executable name; do not create new files. Update CMakeLists as needed.
+The resulting program should unconditionally use the specified parallelization approach. Use no new external dependencies.
 """
 
 EVAL_USER = "llmtest"
 EVAL_ROOT = "/home/llmtest/evals"
 BENCH_SOURCE = "../benchmarks"
+
 
 COMMON_SOURCE = "common"
 
@@ -74,6 +75,7 @@ if ARGV.include?("--help") || ARGV.include?("-h")
     puts "  --run                  Actually run the experiments (without this flag, the script will only print the planned experiments and estimated time/cost)"
     exit
 end
+
 
 puts "Running in #{TESTING ? "testing" : "production"} mode, with #{DO_RUN ? "actual runs" : "no runs (dry run)"} and #{CONTINUE_FROM ? "continuing from #{CONTINUE_FROM}" : "starting fresh"}."
 
@@ -102,6 +104,7 @@ puts "Estimated total cost of the experiment: #{total_cost.round(2)} USD"
 
 TIMESTAMP = CONTINUE_FROM || Time.now.strftime("%Y%m%d-%H%M%S")
 EVAL_DIR = File.join(EVAL_ROOT, "#{TIMESTAMP}")
+EVAL_TARGET_DIR = File.join(Dir.home, "llm_para_experiments", "#{TIMESTAMP}")
 
 # check correct configuration of benchmark folder
 if BENCHMARKS_TO_EVAL.any? { |b| !File.directory?(File.join(BENCH_SOURCE, b)) }
@@ -162,6 +165,10 @@ def eval_config(benchmark, model, par_type, run)
     duration = end_time - start_time
     # write start time, end time and duration to file for later analysis
     File.write(File.join(bench_path, "timing.txt"), "Start time: #{start_time}\nEnd time: #{end_time}\nDuration: #{duration.round(2)} seconds\n")
+
+    # move everything to the target directory, so that subsequent agent runs cannot access the results
+    FileUtils.mkdir_p(EVAL_TARGET_DIR)
+    FileUtils.mv(bench_path, EVAL_TARGET_DIR)
 
     puts " - Done in #{duration.round(2)} seconds."
 

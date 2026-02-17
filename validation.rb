@@ -55,7 +55,8 @@ VALIDATION_FN = "validation_out"
 
 def perform_validation_run(benchmark, build_dir, par_type)
     mpirun = ""
-    mpirun = "mpirun -n 4 " if par_type == PAR_MPI || par_type == PAR_HYBRID
+    # for validation, we can use oversubscription for MPI runs to be able to run them on a single machine without needing a cluster setup
+    mpirun = "mpirun --oversubscribe -n 4 " if par_type == PAR_MPI || par_type == PAR_HYBRID
     env = {}
     env = { "OMP_NUM_THREADS" => "8" } if par_type == PAR_OMP || par_type == PAR_HYBRID
     Dir.chdir(build_dir) do

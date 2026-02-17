@@ -131,7 +131,7 @@ def eval_config(benchmark, model, par_type, run)
     print "Evaluating configuration: #{id}"
 
     # if we have a timing file for this run already, skip it (for continuing existing runs)
-    bench_path = File.join(EVAL_DIR, id)
+    bench_path = File.join(EVAL_TARGET_DIR, id)
     if File.exist?(File.join(bench_path, "timing.txt"))
         puts " - Timing file already exists, skipping run"
         return

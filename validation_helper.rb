@@ -5,7 +5,12 @@
 # returns a subset of {PAR_OMP, PAR_CUDA, PAR_MPI} that are detected in the source code
 def parallelization_detection(source_dir, benchmark)
     # read the source file
-    source = File.read(File.join(source_dir, benchmark, benchmark_to_executable(benchmark) + ".cpp"))
+    source = begin
+        File.read(File.join(source_dir, benchmark, benchmark_to_executable(benchmark) + ".cpp"))
+    rescue
+        # allow .cu file ending change
+        File.read(File.join(source_dir, benchmark, benchmark_to_executable(benchmark) + ".cu"))
+    end
 
     # check for parallelization-specific keywords
     omp_check = source.include?("#pragma omp")

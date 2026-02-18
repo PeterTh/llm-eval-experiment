@@ -134,6 +134,11 @@ def eval_config(benchmark, model, par_type, run)
     bench_path = File.join(EVAL_TARGET_DIR, id)
     if File.exist?(File.join(bench_path, "timing.txt"))
         puts " - Timing file already exists, skipping run"
+        # read and update $times for better estimation of remaining time
+        timing_content = File.read(File.join(bench_path, "timing.txt"))
+        duration_line = timing_content.split("\n").find { |line| line.start_with?("Duration:") }
+        duration = duration_line.split(" ")[1].to_f
+        $times << duration
         return
     end
 

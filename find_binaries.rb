@@ -14,8 +14,8 @@ if ARGV.include?("-h") || ARGV.include?("--help") ||
 end
 
 VALIDATION_DIR = ARGV.find { |arg| arg.start_with?("--validation-dir=") }.split("=").last
-BENCHMARK_FILTER = ARGV.find { |arg| arg.start_with?("--bench=") }&.split("=").last
-PAR_TYPE_FILTER = ARGV.find { |arg| arg.start_with?("--par=") }&.split("=").last
+BENCHMARK_FILTER = ARGV.find { |arg| arg.start_with?("--bench=") }&.split("=")&.last
+PAR_TYPE_FILTER = ARGV.find { |arg| arg.start_with?("--par=") }&.split("=")&.last
 
 # load validation results
 ALL_VALIDATION_RESULTS_FN = File.join(VALIDATION_DIR, "all_validation_results.yaml")

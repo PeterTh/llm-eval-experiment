@@ -14,6 +14,8 @@ VALIDATION_RESULT_FN = "validation_result.txt"
 STDOUT_SUFFIX = "_stdout.log"
 STDERR_SUFFIX = "_stderr.log"
 
+OUT_OF_TIME_EXIT_CODE = 7
+
 # general helper functions ################################################################################################################
 
 # id/string related

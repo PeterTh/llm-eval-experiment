@@ -126,6 +126,8 @@ end
 
 $times = []
 
+$runs_to_do = []
+
 def eval_config(benchmark, model, par_type, run)
     id = run_id_string(benchmark, model, par_type, run)
     print "Evaluating configuration: #{id}"
@@ -145,6 +147,7 @@ def eval_config(benchmark, model, par_type, run)
     # do this check afterwards so we can test the continue functionality without actually running the experiments
     if !DO_RUN
         puts " - Skipping actual run (dry run mode)"
+        $runs_to_do << id
         return
     end
 
@@ -194,4 +197,9 @@ NUM_RUNS.times do |run|
             end
         end
     end
+end
+
+if !DO_RUN
+    puts "Dry run complete. The following #{$runs_to_do.size} runs would have been executed:\n"
+    puts $runs_to_do.join(", ")
 end

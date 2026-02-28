@@ -114,9 +114,9 @@ def command_env(par_type)
     when PAR_CUDA
         return { }
     when PAR_MPI
-        raise { }
+        return { }
     when PAR_HYBRID
-        raise { "OMP_NUM_THREADS" => "8" }
+        return { "OMP_NUM_THREADS" => "8" }
     else
         raise "Unknown parallelization type: #{par_type}"
     end

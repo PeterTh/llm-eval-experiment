@@ -16,6 +16,9 @@ FULL_STATS = ARGV.include?("--full-stats")
 
 ID_FILTER = ARGV.find { |arg| arg.start_with?("--id-filter=") }&.split("=")&.last # for testing, only validate configurations whose id string includes this filter string
 
+TOTAL_TIMEOUT = ARGV.find { |arg| arg.start_with?("--timeout=") }&.split("=")&.last&.to_i&.*60
+START_TIME = Time.now
+
 if EXPERIMENT_PATH.nil? || ARGV.include?("--help") || ARGV.include?("-h")
     puts "Usage: ruby validation_benchmark.rb [options]"
     puts "Options:"
@@ -24,6 +27,7 @@ if EXPERIMENT_PATH.nil? || ARGV.include?("--help") || ARGV.include?("-h")
     puts "  --reuse-ref=REF_DIR         Reuse reference outputs from the given directory instead of regenerating them (optional)"
     puts "  --full-stats                Print detailed statistics about validation results (optional)"
     puts "  --id-filter=FILTER_STR      Only validate configurations whose id string includes the given filter string (optional, for testing)"
+    puts "  --timeout=MINUTES           Total timeout in minutes for this validation script (optional, default is no timeout)"
     exit
 end
 
@@ -206,6 +210,11 @@ def validate_experiment(entry, id_string, benchmark, model, par_type, run)
 end
 
 Dir[File.join(EXPERIMENT_PATH, "*")].each do |entry|
+    if TOTAL_TIMEOUT && Time.now > START_TIME + TOTAL_TIMEOUT 
+        puts "Timeout - stopping this validation run"
+        # signal that we ran out of time
+        exit OUT_OF_TIME_EXIT_CODE
+    end
     if File.directory?(entry)
         id_string = File.basename(entry)
         next unless is_id_string?(id_string)

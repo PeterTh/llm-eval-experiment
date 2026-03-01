@@ -16,6 +16,11 @@ STDERR_SUFFIX = "_stderr.log"
 
 OUT_OF_TIME_EXIT_CODE = 7
 
+BENCHMARK_COUNT = 5
+BENCHMARK_OUT_PREFIX = "benchmark_"
+BENCHMARK_RESULTS_FN = "benchmark_results.yaml"
+BENCHMARK_FULL_RESULTS_FN = "benchmark_full_results.yaml"
+
 # general helper functions ################################################################################################################
 
 # id/string related

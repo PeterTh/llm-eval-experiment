@@ -1,6 +1,3 @@
-# runs benchmarks for all successfully validated experiments of a given parallelization type
-# generally invoked from benchmark_orchestration.rb, which handles SLURM provisioning
-
 require_relative "general"
 
 TIMEOUT = 25 * 60 # 25 minutes, to be safe with the 30 minute Slurm limit
@@ -82,30 +79,6 @@ BENCHMARK_PARAMS = {
         "qtclustering" => [" -n 5000", 40],
         "roomsim" => [] # no valid configurations
     },
-}
-
-BENCHMARK_COUNT = 5
-BENCHMARK_OUT_PREFIX = "benchmark_"
-
-BENCHMARK_RESULTS_FN = "benchmark_results.yaml"
-
-BENCHMARK_PERF_DATA = {
-    "black-scholes" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Options per second: (?<val>\d+(\.\d+)?)/]],
-    "cahn-hilliard" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) MCellUpdates\/s/]],
-    "cholesky" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) GFLOPS/]],
-    "floydwarshall" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) GOPS/]],
-    "matmul" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) GFLOPS/]],
-    "nbody" => [["time", /Simulation time: (?<val>\d+(\.\d+)?) ms/]],
-    "qtclustering" => [["time", /Clustering time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (\d+(\.\d+)?) clusters\/s, (?<val>\d+(\.\d+)?) points\/s/]],
-    "roomsim" => [
-        ["time", /Total computation time: (?<val>\d+(\.\d+)?) ms/],
-        ["precomp_time", /Precomputation time: (?<val>\d+(\.\d+)?) ms/],
-        ["sim_time", /Simulation time: (?<val>\d+(\.\d+)?) ms/],
-        ["dist_time" , /Distance computation time: (?<val>\d+(\.\d+)?) ms/],
-    ],
-    "spmv" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) GFLOPS\/s/]],
-    "stencil3d" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) MCellUpdates\/s/]],
-    "unstructured" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Elements\/sec: (?<val>\d+(\.\d+)?) GigaElements\/s/]],
 }
 
 # helpers

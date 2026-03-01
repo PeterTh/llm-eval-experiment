@@ -1,3 +1,6 @@
+# runs benchmarks for all successfully validated experiments of a given parallelization type
+# generally invoked from benchmark_orchestration.rb, which handles SLURM provisioning
+
 require_relative "general"
 
 TIMEOUT = 25 * 60 # 25 minutes, to be safe with the 30 minute Slurm limit
@@ -95,10 +98,10 @@ BENCHMARK_PERF_DATA = {
     "nbody" => [["time", /Simulation time: (?<val>\d+(\.\d+)?) ms/]],
     "qtclustering" => [["time", /Clustering time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (\d+(\.\d+)?) clusters\/s, (?<val>\d+(\.\d+)?) points\/s/]],
     "roomsim" => [
-        ["precomp_time", /Precomputation time: (?<val>\d+(\.\d+)?) ms/], 
-        ["sim_time", /Simulation time: (?<val>\d+(\.\d+)?) ms/], 
-        ["dist_time" , /Distance computation time: (?<val>\d+(\.\d+)?) ms/], 
-        ["tot_time", /Total computation time: (?<val>\d+(\.\d+)?) ms/],
+        ["time", /Total computation time: (?<val>\d+(\.\d+)?) ms/],
+        ["precomp_time", /Precomputation time: (?<val>\d+(\.\d+)?) ms/],
+        ["sim_time", /Simulation time: (?<val>\d+(\.\d+)?) ms/],
+        ["dist_time" , /Distance computation time: (?<val>\d+(\.\d+)?) ms/],
     ],
     "spmv" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) GFLOPS\/s/]],
     "stencil3d" => [["time", /Computation time: (?<val>\d+(\.\d+)?) ms/], ["throughput", /Performance: (?<val>\d+(\.\d+)?) MCellUpdates\/s/]],

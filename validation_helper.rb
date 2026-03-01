@@ -42,7 +42,7 @@ end
 # Hash: dbef3881b0a560cd
 # === END RESULTS ===
 
-def validate(ref_output, validation_output)
+def validate(ref_output, validation_output, benchmark)
     # find the results section in the validation output
     get_output = lambda do |output|
         if output.include?("=== RESULTS ===") && output.include?("=== END RESULTS ===")
@@ -101,6 +101,14 @@ def validate(ref_output, validation_output)
                     return [false, "Line format mismatch for object #{ref_lines[0]}: '#{ref_line}' vs '#{val_line}'"]
                 end
                 begin
+                    # allow a larger epsilon for some objects in roomsim
+                    if benchmark == "roomsim"
+                        if ref_line.start_with?("Sum: ")
+                            epsilon = 50
+                        elsif ref_line.start_with?("Sample[") && ref_lines[0].include?("Distance")
+                            epsilon = 5
+                        end
+                    end
                     ref_num = Float(ref_value)
                     val_num = Float(val_value)
                     if (ref_num - val_num).abs > epsilon

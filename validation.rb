@@ -197,7 +197,7 @@ def validate_experiment(entry, id_string, benchmark, model, par_type, run)
         validation_result_file.puts "Internal validation PASSED."
 
         # compare output with reference output
-        comparison_result = validate(ref_output, validation_output)
+        comparison_result = validate(ref_output, validation_output, benchmark)
         if comparison_result[0] == false
             validation_result.err_string = "Output comparison FAILED:\n#{comparison_result[1]}"
             validation_result_file.puts(validation_result.err_string)

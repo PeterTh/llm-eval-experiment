@@ -1,6 +1,7 @@
 require 'fileutils'
 require 'open3'
 require 'yaml'
+require 'csv'
 
 PAR_OMP = "omp"
 PAR_CUDA = "cuda"

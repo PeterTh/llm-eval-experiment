@@ -3,6 +3,7 @@
 
 require_relative "general"
 require_relative "validation_class"
+require_relative "general_evaluation"
 
 if !ARGV.any? { |arg| arg.start_with?("--exp=") } ||
    !ARGV.any? { |arg| arg.start_with?("--val=") } ||
@@ -20,44 +21,6 @@ end
 EXP_PATH = File.expand_path(ARGV.find { |arg| arg.start_with?("--exp=") }.split("=").last)
 VAL_PATH = File.expand_path(ARGV.find { |arg| arg.start_with?("--val=") }.split("=").last)
 BENCH_PATH = File.expand_path(ARGV.find { |arg| arg.start_with?("--bench=") }.split("=").last)
-
-# validation status codes
-VS_INVALID = 0
-VS_PARALLELIZED = 1
-VS_BUILDS = 2
-VS_RUNS = 3
-VS_INTERNALLY_VALID = 4
-VS_FULLY_VALID = 5
-
-class AggregateEvaluation
-  attr_reader :benchmark, :model, :par_type, :run
-  attr_accessor :input_tokens, :output_tokens, :cached_tokens
-  attr_accessor :api_time, :total_time
-  attr_accessor :code_additions, :code_deletions
-  attr_accessor :non_whitelisted_dependencies
-  attr_accessor :validation_status, :validation_err_string
-  attr_accessor :benchmark_success, :benchmark_times, :benchmark_median_time
-
-  def initialize(benchmark, model, par_type, run)
-    @benchmark = benchmark
-    @model = model
-    @par_type = par_type
-    @run = run
-    @input_tokens = nil
-    @output_tokens = nil
-    @cached_tokens = nil
-    @api_time = nil
-    @total_time = nil
-    @code_additions = nil
-    @code_deletions = nil
-    @non_whitelisted_dependencies = nil
-    @validation_status = nil
-    @validation_err_string = nil
-    @benchmark_success = nil
-    @benchmark_times = nil
-    @benchmark_median_time = nil
-  end
-end
 
 $results = {}
 
@@ -201,9 +164,13 @@ end
 
 puts "Added benchmark results to #{$results.count { |_, agg_eval| agg_eval.benchmark_success != nil }} experiments, #{$results.count { |_, agg_eval| agg_eval.benchmark_success == true }} of which were successful"
 
-# output all the information to a csv file for analysis and plotting
+# output all the information to a yaml file for later use
 
-require "csv"
+out_yaml_fn = File.join(EXP_PATH, "aggregate_results.yaml")
+File.write(out_yaml_fn, YAML.dump($results))
+puts "Stored aggregate results in #{out_yaml_fn}"
+
+# output all the information to a csv file for analysis and plotting
 
 out_csv_fn = File.join(EXP_PATH, "aggregate_results.csv")
 CSV.open(out_csv_fn, "w") do |csv|
@@ -231,4 +198,4 @@ CSV.open(out_csv_fn, "w") do |csv|
   end
 end
 
-puts "Wrote aggregate results to #{out_csv_fn}"
+puts "Wrote aggregate results CSV to #{out_csv_fn}"

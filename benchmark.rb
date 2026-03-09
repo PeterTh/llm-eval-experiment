@@ -77,7 +77,7 @@ BENCHMARK_PARAMS = {
         "nbody" => [" -n 50000 -s 200", 20],
         "cholesky" => [" -n 4096", 50],
         "qtclustering" => [" -n 5000", 40],
-        "roomsim" => [] # no valid configurations
+        "roomsim" => ["-n 5120 -t 2000", 40]
     },
 }
 

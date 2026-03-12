@@ -27,8 +27,10 @@ All scripts are written in **Ruby** and designed to run on a Linux HPC cluster w
 │                        experiment.rb                                │
 │   Invokes LLM agents (GitHub Copilot CLI) for each                  │
 │   (benchmark × model × parallelization type × run) combination      │
+|   Prepares isolated working directories, and prompts agents as      |
+|   a separate, limited user (needs to be set up a-priori)            │
 └──────────────────────────────┬──────────────────────────────────────┘
-                               │  LLM-generated code
+                               │  LLM-generated code & metainformation
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │            validation.rb  /  validation_orchestration.rb            │

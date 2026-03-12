@@ -1,3 +1,6 @@
+# resets runs that failed due to server errors
+# they will then automatically be re-run in the next experiment invocation
+
 require_relative "general"
 
 ERROR_STRING = "Response was interrupted due to a server error"

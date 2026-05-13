@@ -4,7 +4,8 @@ This repository contains the experiment, validation, benchmarking, and scoring s
 
 > **Evaluating the Parallelization Capabilities of State-of-the-art Agentic Large Language Models**  
 > Peter Thoman and Philipp Gschwandtner, University of Innsbruck  
-> *currently under review*
+> Accepted in **Euro-Par 2026**: 32nd International European Conference on Parallel and Distributed Computing
+> *Full citation information to follow*
 
 ## Overview
 

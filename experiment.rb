@@ -31,11 +31,17 @@ MODELS = {"claude-sonnet-4.5":1,
           "gpt-5":1,
           "gpt-5.1-codex-mini":0.33,
           "gpt-5-mini":0,
-          "gpt-4.1":0}
+          "gpt-4.1":0,
+          "qwen-3.6-27B-udq4":0,
+        }
+
+MODEL_MAPPING = {
+    "qwen-3.6-27B-udq4" => "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
+}
 
 BASE_COST_PER_REQUEST = 0.04 # base cost in dollars for github copilot requests, to multiply with per-model cost factors
 
-PARAMS = "--allow-all-paths --allow-all-tools --no-ask-user --no-color"
+PARAMS = "--allow-all-paths --allow-all-tools --no-ask-user --no-color --autopilot"
 
 INSTRUCTION_START = "Parallelize the %%1 benchmark code found in $$2 "
 
@@ -88,7 +94,8 @@ if TESTING
     NUM_RUNS = 5
 else
     BENCHMARKS_TO_EVAL = BENCHMARKS
-    MODELS_TO_EVAL = ["claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.6", "gemini-3-pro-preview", "gpt-5.2-codex", "gpt-5.2", "gpt-5-mini", "gpt-4.1"]
+    #MODELS_TO_EVAL = ["claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.6", "gemini-3-pro-preview", "gpt-5.2-codex", "gpt-5.2", "gpt-5-mini", "gpt-4.1"]
+    MODELS_TO_EVAL = ["qwen-3.6-27B-udq4"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 end
@@ -163,7 +170,9 @@ def eval_config(benchmark, model, par_type, run)
         # give the eval user access to the folder and its contents
         FileUtils.chmod_R(0777, ".")
         # switch to the eval user and run the copilot command; write output to file for later analysis
-        copilot_command = "cd #{bench_path}; copilot #{PARAMS} --model #{model} -p \"#{instruction}\" > output.txt 2>&1"
+        actual_model_id = model
+        actual_model_id = MODEL_MAPPING[model] if MODEL_MAPPING.keys.include?(model)
+        copilot_command = "cd #{bench_path}; copilot #{PARAMS} --model #{actual_model_id} -p \"#{instruction}\" > output.txt 2>&1"
         output = system("su - #{EVAL_USER} --shell=/bin/bash -c '#{copilot_command}'")
         # write instructions to file for later analysis
         File.write(File.join(bench_path, "instruction.txt"), instruction)

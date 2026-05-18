@@ -33,10 +33,12 @@ MODELS = {"claude-sonnet-4.5":1,
           "gpt-5-mini":0,
           "gpt-4.1":0,
           "qwen-3.6-27B-udq4":0,
+          "qwen-3.6-27B-udq4-pi":0,
         }
 
 MODEL_MAPPING = {
     "qwen-3.6-27B-udq4" => "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
+    "qwen-3.6-27B-udq4-pi" => "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
 }
 
 BASE_COST_PER_REQUEST = 0.04 # base cost in dollars for github copilot requests, to multiply with per-model cost factors
@@ -87,6 +89,9 @@ puts "Running in #{TESTING ? "testing" : "production"} mode, with #{DO_RUN ? "ac
 
 # Evaluation configuration ####################################################################################################################################
 
+#HARNESS = :copilot
+HARNESS = :pi
+
 if TESTING
     BENCHMARKS_TO_EVAL = BENCHMARKS # ["black-scholes", "nbody"]
     MODELS_TO_EVAL = ["gpt-5-mini", "gpt-4.1"]
@@ -95,7 +100,7 @@ if TESTING
 else
     BENCHMARKS_TO_EVAL = BENCHMARKS
     #MODELS_TO_EVAL = ["claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.6", "gemini-3-pro-preview", "gpt-5.2-codex", "gpt-5.2", "gpt-5-mini", "gpt-4.1"]
-    MODELS_TO_EVAL = ["qwen-3.6-27B-udq4"]
+    MODELS_TO_EVAL = ["qwen-3.6-27B-udq4-pi"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 end
@@ -172,8 +177,13 @@ def eval_config(benchmark, model, par_type, run)
         # switch to the eval user and run the copilot command; write output to file for later analysis
         actual_model_id = model
         actual_model_id = MODEL_MAPPING[model] if MODEL_MAPPING.keys.include?(model)
-        copilot_command = "cd #{bench_path}; copilot #{PARAMS} --model #{actual_model_id} -p \"#{instruction}\" > output.txt 2>&1"
-        output = system("su - #{EVAL_USER} --shell=/bin/bash -c '#{copilot_command}'")
+        command = ""
+        if HARNESS == :pi
+            command = "cd #{bench_path}; pi -p \"#{instruction}\" > output.txt 2>&1"
+        else
+            command = "cd #{bench_path}; copilot #{PARAMS} --model #{actual_model_id} -p \"#{instruction}\" > output.txt 2>&1"
+        end
+        output = system("su - #{EVAL_USER} --shell=/bin/bash -c '#{command}'")
         # write instructions to file for later analysis
         File.write(File.join(bench_path, "instruction.txt"), instruction)
     end
@@ -189,6 +199,9 @@ def eval_config(benchmark, model, par_type, run)
 
     puts " - Done in #{duration.round(2)} seconds."
 
+    # kill stray processes that might still be running (spawned by the LLM)
+    system("su - #{EVAL_USER} --shell=/bin/bash -c 'pkill -u #{EVAL_USER} -KILL'")
+
     $times << duration
     avg_time = $times.sum / $times.size
     remaining_experiments = $total_experiments - $times.size
@@ -197,6 +210,22 @@ def eval_config(benchmark, model, par_type, run)
 end
 
 # Experiment ##################################################################################################################################################
+
+# sanity check
+if HARNESS == :pi
+    puts "Using pi harness for evaluation"
+    MODELS_TO_EVAL.each do |model|
+        # this is a bit jank, but we identify the harness by an addition to the model name string
+        if !MODEL_MAPPING.keys.include?(model)
+            puts "Model '#{model}' is not in MODEL_MAPPING"
+            exit 1
+        end
+        if !model.end_with?("-pi")
+            puts "Model '#{model}' does not have '-pi' suffix for pi harness"
+            exit 1
+        end
+    end
+end
 
 NUM_RUNS.times do |run|
     PAR_TYPES_TO_EVAL.each do |par_type|

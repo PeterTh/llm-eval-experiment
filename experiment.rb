@@ -105,6 +105,8 @@ else
     NUM_RUNS = 5
 end
 
+MAX_TIME_SECONDS = 4 * 60 * 60 # after this time we consider a run to be unsuccessful
+
 # Pre-experiment ##############################################################################################################################################
 
 experiments_per_model = BENCHMARKS_TO_EVAL.size * PAR_TYPES_TO_EVAL.size * NUM_RUNS
@@ -177,11 +179,13 @@ def eval_config(benchmark, model, par_type, run)
         # switch to the eval user and run the copilot command; write output to file for later analysis
         actual_model_id = model
         actual_model_id = MODEL_MAPPING[model] if MODEL_MAPPING.keys.include?(model)
+        timeout_command = "timeout --kill-after=30s #{MAX_TIME_SECONDS}s"
+        command_prefix = "cd #{bench_path}; #{timeout_command}"
         command = ""
         if HARNESS == :pi
-            command = "cd #{bench_path}; pi -p \"#{instruction}\" > output.txt 2>&1"
+            command = "#{command_prefix} pi -p \"#{instruction}\" > output.txt 2>&1"
         else
-            command = "cd #{bench_path}; copilot #{PARAMS} --model #{actual_model_id} -p \"#{instruction}\" > output.txt 2>&1"
+            command = "#{command_prefix} copilot #{PARAMS} --model #{actual_model_id} -p \"#{instruction}\" > output.txt 2>&1"
         end
         output = system("su - #{EVAL_USER} --shell=/bin/bash -c '#{command}'")
         # write instructions to file for later analysis

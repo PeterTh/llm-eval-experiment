@@ -34,11 +34,13 @@ MODELS = {"claude-sonnet-4.5":1,
           "gpt-4.1":0,
           "qwen-3.6-27B-udq4":0,
           "qwen-3.6-27B-udq4-pi":0,
+          "qwen-3.6-27B-udq4-pi-t":0,
         }
 
 MODEL_MAPPING = {
     "qwen-3.6-27B-udq4" => "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
     "qwen-3.6-27B-udq4-pi" => "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
+    "qwen-3.6-27B-udq4-pi-t" => "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
 }
 
 BASE_COST_PER_REQUEST = 0.04 # base cost in dollars for github copilot requests, to multiply with per-model cost factors
@@ -100,7 +102,7 @@ if TESTING
 else
     BENCHMARKS_TO_EVAL = BENCHMARKS
     #MODELS_TO_EVAL = ["claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.6", "gemini-3-pro-preview", "gpt-5.2-codex", "gpt-5.2", "gpt-5-mini", "gpt-4.1"]
-    MODELS_TO_EVAL = ["qwen-3.6-27B-udq4-pi"]
+    MODELS_TO_EVAL = ["qwen-3.6-27B-udq4-pi-t"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 end
@@ -224,7 +226,7 @@ if HARNESS == :pi
             puts "Model '#{model}' is not in MODEL_MAPPING"
             exit 1
         end
-        if !model.end_with?("-pi")
+        if !(model.end_with?("-pi") || model.include?("-pi-"))
             puts "Model '#{model}' does not have '-pi' suffix for pi harness"
             exit 1
         end

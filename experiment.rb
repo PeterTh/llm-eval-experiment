@@ -35,17 +35,52 @@ MODELS = {"claude-sonnet-4.5":1,
           "qwen-3.6-27B-udq4":0,
           "qwen-3.6-27B-udq4-pi":0,
           "qwen-3.6-27B-udq4-pi-t":0,
+          "deepseek-v4-flash":0,
+          "qwen3.7-plus":0,
+          "minimax-m3":0,
+          "gpt-5.6-luna-xhigh":0,
+          "gpt-5.6-luna-medium":0,
+          "gpt-5.6-luna-low":0,
+          "gpt-5.6-terra-xhigh":0,
+          "gpt-5.6-terra-medium":0,
+          "gpt-5.6-terra-low":0,
+          "gpt-5.6-sol-xhigh":0,
+          "gpt-5.6-sol-medium":0,
+          "gpt-5.6-sol-low":0,
         }
 
 MODEL_MAPPING = {
     "qwen-3.6-27B-udq4" => "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
     "qwen-3.6-27B-udq4-pi" => "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
     "qwen-3.6-27B-udq4-pi-t" => "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
+    "gpt-5.6-luna-xhigh" => "gpt-5.6-luna",
+    "gpt-5.6-luna-medium" => "gpt-5.6-luna",
+    "gpt-5.6-luna-low" => "gpt-5.6-luna",
+    "gpt-5.6-terra-xhigh" => "gpt-5.6-terra",
+    "gpt-5.6-terra-medium" => "gpt-5.6-terra",
+    "gpt-5.6-terra-low" => "gpt-5.6-terra",
+    "gpt-5.6-sol-xhigh" => "gpt-5.6-sol",
+    "gpt-5.6-sol-medium" => "gpt-5.6-sol",
+    "gpt-5.6-sol-low" => "gpt-5.6-sol",
+}
+
+REASONING_MAPPING = {
+    "gpt-5.6-luna-xhigh" => "xhigh",
+    "gpt-5.6-luna-medium" => "medium",
+    "gpt-5.6-luna-low" => "low",
+    "gpt-5.6-terra-xhigh" => "xhigh",
+    "gpt-5.6-terra-medium" => "medium",
+    "gpt-5.6-terra-low" => "low",
+    "gpt-5.6-sol-xhigh" => "xhigh",
+    "gpt-5.6-sol-medium" => "medium",
+    "gpt-5.6-sol-low" => "low",
 }
 
 BASE_COST_PER_REQUEST = 0.04 # base cost in dollars for github copilot requests, to multiply with per-model cost factors
 
 PARAMS = "--allow-all-paths --allow-all-tools --no-ask-user --no-color --autopilot"
+
+PARAMS_CODEX = '--dangerously-bypass-approvals-and-sandbox --disable apps --disable auth_elicitation --disable browser_use --disable browser_use_external --disable browser_use_full_cdp_access --disable computer_use --disable in_app_browser --disable in_app_updates --disable image_generation --disable memories --disable mentions_v2 --disable multi_agent --disable multi_agent_v2 --disable plugin_sharing --disable plugins --disable remote_plugin --disable skill_mcp_dependency_install --disable tool_call_mcp_elicitation --disable tool_suggest --disable workspace_dependencies'
 
 INSTRUCTION_START = "Parallelize the %%1 benchmark code found in $$2 "
 
@@ -92,7 +127,8 @@ puts "Running in #{TESTING ? "testing" : "production"} mode, with #{DO_RUN ? "ac
 # Evaluation configuration ####################################################################################################################################
 
 #HARNESS = :copilot
-HARNESS = :pi
+#HARNESS = :pi
+HARNESS = :codex
 
 if TESTING
     BENCHMARKS_TO_EVAL = BENCHMARKS # ["black-scholes", "nbody"]
@@ -102,7 +138,9 @@ if TESTING
 else
     BENCHMARKS_TO_EVAL = BENCHMARKS
     #MODELS_TO_EVAL = ["claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.6", "gemini-3-pro-preview", "gpt-5.2-codex", "gpt-5.2", "gpt-5-mini", "gpt-4.1"]
-    MODELS_TO_EVAL = ["qwen-3.6-27B-udq4-pi-t"]
+    MODELS_TO_EVAL = ["gpt-5.6-luna-xhigh", "gpt-5.6-luna-medium", "gpt-5.6-luna-low", 
+                      "gpt-5.6-terra-xhigh", "gpt-5.6-terra-medium", "gpt-5.6-terra-low",
+                      "gpt-5.6-sol-xhigh", "gpt-5.6-sol-medium", "gpt-5.6-sol-low"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 end
@@ -186,6 +224,9 @@ def eval_config(benchmark, model, par_type, run)
         command = ""
         if HARNESS == :pi
             command = "#{command_prefix} pi -p \"#{instruction}\" > output.txt 2>&1"
+        elsif HARNESS == :codex
+            reasoning_effort = REASONING_MAPPING[model] || "xhigh"
+            command = "#{command_prefix} codex --model #{actual_model_id} -c model_reasoning_effort=\"#{reasoning_effort}\" #{PARAMS_CODEX} exec \"#{instruction}\" > output.txt 2>&1"
         else
             command = "#{command_prefix} copilot #{PARAMS} --model #{actual_model_id} -p \"#{instruction}\" > output.txt 2>&1"
         end
@@ -231,6 +272,8 @@ if HARNESS == :pi
             exit 1
         end
     end
+elsif HARNESS == :codex
+    puts "Using codex harness for evaluation"
 end
 
 NUM_RUNS.times do |run|

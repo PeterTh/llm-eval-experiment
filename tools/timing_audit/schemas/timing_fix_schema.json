@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "required": [
+    "program_id",
+    "status",
+    "summary",
+    "expected_timing_semantics",
+    "edits",
+    "non_timing_changes",
+    "notes"
+  ],
+  "properties": {
+    "program_id": { "type": "string" },
+    "status": { "type": "string", "enum": ["proposed", "cannot_fix"] },
+    "summary": { "type": "string" },
+    "expected_timing_semantics": { "type": "string" },
+    "edits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "old_text", "new_text", "rationale"],
+        "properties": {
+          "path": { "type": "string" },
+          "old_text": { "type": "string" },
+          "new_text": { "type": "string" },
+          "rationale": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "non_timing_changes": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "notes": { "type": "string" }
+  },
+  "additionalProperties": false
+}

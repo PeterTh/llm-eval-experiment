@@ -1,0 +1,69 @@
+{
+  "type": "object",
+  "required": [
+    "program_id",
+    "final_verdict",
+    "prior_rejection_upheld",
+    "confidence",
+    "issue_categories",
+    "timing_contract_satisfied",
+    "timing_only_scope_satisfied",
+    "environment_evidence_assessment",
+    "rationale",
+    "evidence",
+    "minimal_correction",
+    "notes"
+  ],
+  "properties": {
+    "program_id": { "type": "string" },
+    "final_verdict": { "type": "string", "enum": ["accept", "reject", "ambiguous"] },
+    "prior_rejection_upheld": { "type": "boolean" },
+    "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+    "issue_categories": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "none",
+          "missing_start_synchronization",
+          "missing_stop_synchronization",
+          "missing_rank_aggregation",
+          "rank_local_timing",
+          "non_maximum_aggregation",
+          "wrong_mpi_datatype",
+          "asymmetric_timed_region",
+          "incomplete_timed_region",
+          "timed_region_regression",
+          "missing_device_synchronization",
+          "timer_unit_error",
+          "reported_value_mismatch",
+          "collective_mismatch",
+          "communicator_root_mismatch",
+          "non_timing_change",
+          "introduced_correctness_risk",
+          "other"
+        ]
+      }
+    },
+    "timing_contract_satisfied": { "type": "boolean" },
+    "timing_only_scope_satisfied": { "type": "boolean" },
+    "environment_evidence_assessment": { "type": "string" },
+    "rationale": { "type": "string" },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "lines", "finding"],
+        "properties": {
+          "path": { "type": "string" },
+          "lines": { "type": "string" },
+          "finding": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "minimal_correction": { "type": "string" },
+    "notes": { "type": "string" }
+  },
+  "additionalProperties": false
+}

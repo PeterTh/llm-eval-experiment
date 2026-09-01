@@ -1,0 +1,78 @@
+{
+  "type": "object",
+  "required": [
+    "program_id",
+    "verdict",
+    "issue_categories",
+    "confidence",
+    "timing_contract_satisfied",
+    "timing_only_scope_satisfied",
+    "device_completion",
+    "timed_region",
+    "rank_aggregation",
+    "collective_safety",
+    "canonical_output",
+    "scope_assessment",
+    "evidence",
+    "minimal_correction",
+    "notes"
+  ],
+  "properties": {
+    "program_id": { "type": "string" },
+    "verdict": { "type": "string", "enum": ["accept", "reject", "ambiguous"] },
+    "issue_categories": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "none",
+          "missing_start_synchronization",
+          "missing_stop_synchronization",
+          "missing_rank_aggregation",
+          "rank_local_timing",
+          "non_maximum_aggregation",
+          "wrong_mpi_datatype",
+          "asymmetric_timed_region",
+          "incomplete_timed_region",
+          "timed_region_regression",
+          "missing_device_synchronization",
+          "timer_unit_error",
+          "reported_value_mismatch",
+          "collective_mismatch",
+          "communicator_root_mismatch",
+          "non_timing_change",
+          "introduced_correctness_risk",
+          "other"
+        ]
+      }
+    },
+    "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+    "timing_contract_satisfied": { "type": "boolean" },
+    "timing_only_scope_satisfied": { "type": "boolean" },
+    "device_completion": {
+      "type": "string",
+      "enum": ["valid", "not_applicable", "invalid", "ambiguous"]
+    },
+    "timed_region": { "type": "string" },
+    "rank_aggregation": { "type": "string" },
+    "collective_safety": { "type": "string" },
+    "canonical_output": { "type": "string" },
+    "scope_assessment": { "type": "string" },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "lines", "finding"],
+        "properties": {
+          "path": { "type": "string" },
+          "lines": { "type": "string" },
+          "finding": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "minimal_correction": { "type": "string" },
+    "notes": { "type": "string" }
+  },
+  "additionalProperties": false
+}

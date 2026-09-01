@@ -244,6 +244,26 @@ children. If user-systemd scopes are unavailable, execution of generated code is
 `LOCAL_EVALUATION_ALLOW_UNCONTAINED=1` is the explicit emergency opt-out; use it only
 after reviewing the risk because aggregate memory/PID containment is then unavailable.
 
+## Timing audit and corrections
+
+The static timing audit, timing-only correction, independent-review, adjudication,
+scoped-rerun, and final scoring utilities are maintained under
+[`tools/timing_audit`](tools/timing_audit). Run-specific decisions and ID lists do not
+belong in this repository. The exact method snapshot and compact evidence used for the
+published local release are retained in
+[`llm-eval-local`](https://github.com/PeterTh/llm-eval-local/tree/local-eval-2026-08-25/method/timing-audit).
+
+Temporary agent/build workspaces must use node-local storage such as `/tmp`, not NFS.
+Persistent audit and benchmark results belong in a dedicated directory under the
+operator's home directory and are exported to the artifact repository only after
+curation.
+
+Run the complete unit test suite with:
+
+```bash
+ruby -Itest -e 'Dir["test/test_*.rb"].sort.each { |file| require_relative file }'
+```
+
 ## License
 
 This code is provided for research reproducibility. See the associated paper for citation information.

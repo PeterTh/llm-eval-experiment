@@ -1,0 +1,186 @@
+schema_version: 1
+state: seed
+target_seconds:
+  minimum: 2.0
+  target: 3.0
+  maximum: 5.0
+  wall_minimum: 2.0
+  wall_target: 3.0
+  wall_maximum: 8.0
+  short_compute_ratio: 0.25
+  measurements: 3
+  max_probes: 4
+  probe_timeout_seconds: 30
+  cell_wall_budget_seconds: 300
+  phase_wall_budget_seconds: 21600
+pilot_model_priority:
+  - gpt-5.6-sol-xhigh
+  - gpt-5.6-terra-xhigh
+  - claude-opus-4.6
+  - gpt-5.2-codex
+benchmarks:
+  black-scholes:
+    # Some otherwise valid MPI submissions replicate the full ~80-byte/option
+    # input on every rank. At 128 ranks, 10M options is already about 102 GiB.
+    scale:
+      { argument: "-n", exponent: 1.0, alignment: 1000000, minimum: 1000000, maximum: 200000000,
+        maximum_by_backend: { omp: 200000000, cuda: 150000000, mpi: 10000000, hybrid: 200000000 } }
+    input_caps:
+      omp: { "-n": 200000000 }
+      cuda: { "-n": 150000000 }
+      mpi: { "-n": 10000000 }
+      hybrid: { "-n": 200000000 }
+    memory_caps_gib: { host_scope: 256, cuda_device_per_gpu: 20 }
+    args:
+      omp: ["-n", "25000000"]
+      cuda: ["-n", "25000000"]
+      mpi: ["-n", "10000000"]
+      hybrid: ["-n", "100000000"]
+  cahn-hilliard:
+    scale: { argument: "-i", exponent: 1.0, alignment: 1, minimum: 1, maximum: 2000 }
+    input_caps:
+      omp: { "-x": 512, "-i": 2000 }
+      cuda: { "-x": 512, "-i": 2000 }
+      # Bound worst-case rank-local replication of several full 3D fields.
+      mpi: { "-x": 256, "-i": 2000 }
+      hybrid: { "-x": 512, "-i": 2000 }
+    memory_caps_gib: { host_scope: 256, cuda_device_per_gpu: 20 }
+    args:
+      omp: ["-x", "512", "-i", "30"]
+      cuda: ["-x", "512", "-i", "100"]
+      mpi: ["-x", "256", "-i", "100"]
+      hybrid: ["-x", "512", "-i", "100"]
+  cholesky:
+    scale: { argument: "-n", exponent: 3.0, alignment: 128, minimum: 512, maximum: 8192 }
+    input_caps:
+      omp: { "-n": 8192 }
+      cuda: { "-n": 8192 }
+      mpi: { "-n": 8192 }
+      hybrid: { "-n": 8192 }
+    memory_caps_gib: { host_scope: 256, cuda_device_per_gpu: 20 }
+    args:
+      omp: ["-n", "3072"]
+      cuda: ["-n", "3072"]
+      mpi: ["-n", "3072"]
+      hybrid: ["-n", "4096"]
+  floydwarshall:
+    scale:
+      { argument: "-n", exponent: 3.0, alignment: 128, minimum: 512, maximum: 12288,
+        maximum_by_backend: { omp: 12288, cuda: 8192, mpi: 12288, hybrid: 10240 } }
+    input_caps:
+      omp: { "-n": 12288 }
+      cuda: { "-n": 8192 }
+      mpi: { "-n": 12288 }
+      hybrid: { "-n": 10240 }
+    memory_caps_gib: { host_scope: 256, cuda_device_per_gpu: 20 }
+    args:
+      omp: ["-n", "4096"]
+      cuda: ["-n", "8192"]
+      mpi: ["-n", "8192"]
+      hybrid: ["-n", "10240"]
+  matmul:
+    scale:
+      { argument: "-n", exponent: 3.0, alignment: 128, minimum: 512, maximum: 16384,
+        maximum_by_backend: { omp: 16384, cuda: 12288, mpi: 6144, hybrid: 12288 } }
+    input_caps:
+      omp: { "-n": 16384 }
+      cuda: { "-n": 12288 }
+      mpi: { "-n": 6144 }
+      hybrid: { "-n": 12288 }
+    memory_caps_gib: { host_scope: 256, cuda_device_per_gpu: 20 }
+    args:
+      omp: ["-n", "3072"]
+      cuda: ["-n", "8192"]
+      mpi: ["-n", "6144"]
+      hybrid: ["-n", "8192"]
+  nbody:
+    scale: { argument: "-s", exponent: 1.0, alignment: 1, minimum: 1, maximum: 5000 }
+    input_caps:
+      omp: { "-n": 100000, "-s": 5000 }
+      cuda: { "-n": 100000, "-s": 5000 }
+      mpi: { "-n": 100000, "-s": 5000 }
+      hybrid: { "-n": 100000, "-s": 5000 }
+    memory_caps_gib: { host_scope: 256, cuda_device_per_gpu: 20 }
+    args:
+      omp: ["-n", "20000", "-s", "100"]
+      cuda: ["-n", "40000", "-s", "200"]
+      mpi: ["-n", "40000", "-s", "100"]
+      hybrid: ["-n", "50000", "-s", "200"]
+  qtclustering:
+    scale:
+      { argument: "-n", exponent: 3.0, alignment: 100, minimum: 1000, maximum: 10000,
+        maximum_by_backend: { omp: 10000, cuda: 8000, mpi: 8000, hybrid: 8000 } }
+    input_caps:
+      omp: { "-n": 10000 }
+      cuda: { "-n": 8000 }
+      mpi: { "-n": 8000 }
+      hybrid: { "-n": 8000 }
+    memory_caps_gib: { host_scope: 256, cuda_device_per_gpu: 20 }
+    args:
+      omp: ["-n", "2200"]
+      cuda: ["-n", "4000"]
+      mpi: ["-n", "4000"]
+      hybrid: ["-n", "5000"]
+  roomsim:
+    scale: { argument: "-t", exponent: 1.0, alignment: 10, minimum: 100, maximum: 10000 }
+    input_caps:
+      omp: { "-n": 5120, "-t": 10000 }
+      cuda: { "-n": 5120, "-t": 10000 }
+      mpi: { "-n": 5120, "-t": 10000 }
+      hybrid: { "-n": 5120, "-t": 10000 }
+    memory_caps_gib: { host_scope: 256, cuda_device_per_gpu: 20 }
+    args:
+      omp: ["-n", "5120", "-t", "500"]
+      cuda: ["-n", "5120", "-t", "1000"]
+      mpi: ["-n", "5120", "-t", "1000"]
+      hybrid: ["-n", "5120", "-t", "2000"]
+  spmv:
+    scale: { argument: "-i", exponent: 1.0, alignment: 10, minimum: 10, maximum: 50000 }
+    input_caps:
+      omp: { "-n": 50000, "-s": 1000, "-i": 50000 }
+      cuda: { "-n": 50000, "-s": 1000, "-i": 50000 }
+      mpi: { "-n": 50000, "-s": 1000, "-i": 50000 }
+      hybrid: { "-n": 50000, "-s": 1000, "-i": 50000 }
+    # Memory is proportional to n^2/s, so sparsity needs a lower—not only upper—bound.
+    input_minimums:
+      omp: { "-s": 40 }
+      cuda: { "-s": 40 }
+      mpi: { "-s": 40 }
+      hybrid: { "-s": 40 }
+    memory_caps_gib: { host_scope: 256, cuda_device_per_gpu: 20 }
+    args:
+      omp: ["-n", "30000", "-s", "40", "-i", "200"]
+      cuda: ["-n", "30000", "-s", "40", "-i", "10000"]
+      # Matrix construction, not the reported kernel timer, dominated this
+      # 128-rank cell. Larger starts exceeded 30 s; this safe floor completes
+      # in about 11 s for the slow representative and leaves -i scalable.
+      mpi: ["-n", "2000", "-s", "40", "-i", "10"]
+      hybrid: ["-n", "40000", "-s", "40", "-i", "5000"]
+  stencil3d:
+    scale: { argument: "-i", exponent: 1.0, alignment: 1, minimum: 1, maximum: 5000 }
+    input_caps:
+      omp: { "-x": 512, "-i": 5000 }
+      cuda: { "-x": 512, "-i": 5000 }
+      # Bound worst-case rank-local replication of several full 3D fields.
+      mpi: { "-x": 256, "-i": 5000 }
+      hybrid: { "-x": 512, "-i": 5000 }
+    memory_caps_gib: { host_scope: 256, cuda_device_per_gpu: 20 }
+    args:
+      omp: ["-x", "512", "-i", "20"]
+      cuda: ["-x", "512", "-i", "100"]
+      mpi: ["-x", "256", "-i", "100"]
+      hybrid: ["-x", "512", "-i", "100"]
+  unstructured:
+    scale: { argument: "-i", exponent: 1.0, alignment: 1, minimum: 1, maximum: 5000 }
+    input_caps:
+      omp: { "-n": 10000, "-i": 5000 }
+      cuda: { "-n": 6000, "-i": 5000 }
+      # 2000^2 elements at 176 bytes each remains about 84 GiB if all 128 ranks replicate it.
+      mpi: { "-n": 2000, "-i": 5000 }
+      hybrid: { "-n": 10000, "-i": 5000 }
+    memory_caps_gib: { host_scope: 256, cuda_device_per_gpu: 20 }
+    args:
+      omp: ["-n", "5000", "-i", "50"]
+      cuda: ["-n", "6000", "-i", "50"]
+      mpi: ["-n", "2000", "-i", "50"]
+      hybrid: ["-n", "10000", "-i", "200"]

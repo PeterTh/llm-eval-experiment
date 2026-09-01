@@ -14,8 +14,25 @@ def parallelization_detection(source_dir, benchmark)
 
     # check for parallelization-specific keywords
     omp_check = source.include?("#pragma omp")
-    cuda_check = (source.include?("cuda.h") || source.include?("cuda_runtime.h")) ||
-                 (source.include?("<<<") && source.include?(">>>"))
+    cuda_headers = %w[
+        cuda.h
+        cuda_runtime.h
+        cuda_runtime_api.h
+        cublas_v2.h
+        cublasLt.h
+        cusolverDn.h
+        cusolverSp.h
+        cusparse.h
+        cufft.h
+        curand.h
+        curand_kernel.h
+    ]
+    cuda_check = cuda_headers.any? { |header| source.include?(header) } ||
+                 (source.include?("<<<") && source.include?(">>>")) ||
+                 source.include?("thrust::device_vector") ||
+                 source.include?("thrust::device_ptr") ||
+                 source.include?("thrust::device") ||
+                 source.include?("cub::Device")
     mpi_check = source.include?("MPI_Init") && source.include?("MPI_Finalize") &&
                 source.include?("MPI_Comm_rank") && source.include?("MPI_Comm_size")
     ret = []

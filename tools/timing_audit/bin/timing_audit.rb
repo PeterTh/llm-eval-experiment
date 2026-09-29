@@ -18,6 +18,7 @@ when "prepare"
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: ruby tools/timing_audit/bin/timing_audit.rb prepare [options]"
     opts.on("--release-root=PATH", "Published local-evaluation artifact") { |value| options[:release_root] = value }
+    opts.on("--validation-run=PATH", "Completed validation run (no benchmarks or scores required)") { |value| options[:validation_run] = value }
     opts.on("--source-root=PATH", "Pinned generated-source Git checkout") { |value| options[:source_root] = value }
     opts.on("--output=PATH", "New persistent audit directory") { |value| options[:output_dir] = value }
     opts.on("--trial-size=N", Integer, "Number of cases in the trial") { |value| options[:trial_size] = value }

@@ -12,6 +12,7 @@ class AggregateEvaluation
   attr_reader :benchmark, :model, :par_type, :run
   attr_accessor :input_tokens, :output_tokens, :cached_tokens
   attr_accessor :api_time, :total_time
+  attr_accessor :raw_api_time, :raw_total_time, :agent_retry_count, :agent_retry_backoff_seconds
   attr_accessor :code_additions, :code_deletions
   attr_accessor :non_whitelisted_dependencies
   attr_accessor :validation_status, :validation_err_string
@@ -35,6 +36,10 @@ class AggregateEvaluation
     @cached_tokens = nil
     @api_time = nil
     @total_time = nil
+    @raw_api_time = nil
+    @raw_total_time = nil
+    @agent_retry_count = 0
+    @agent_retry_backoff_seconds = 0.0
     @code_additions = nil
     @code_deletions = nil
     @non_whitelisted_dependencies = nil

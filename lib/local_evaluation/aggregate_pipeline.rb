@@ -177,6 +177,7 @@ module LocalEvaluation
       else
         warn_for(id, "Missing or unparseable timing.txt")
       end
+      result.raw_total_time = result.total_time
       unless File.file?(output_path)
         warn_for(id, "Missing output.txt")
         apply_diff_counts(id, info, result)
@@ -184,11 +185,16 @@ module LocalEvaluation
       end
 
       output = read_limited(output_path)
-      if (match = output.match(/API time spent:\s+(?:(?<hours>\d+(?:\.\d+)?)h)?\s*(?:(?<minutes>\d+(?:\.\d+)?)m)?\s*(?<seconds>\d+(?:\.\d+)?)s/))
+      claude = claude_stream_result(output)
+      if claude && claude["duration_api_ms"]
+        result.api_time = claude["duration_api_ms"].to_f / 1000.0
+      elsif (match = output.match(/API time spent:\s+(?:(?<hours>\d+(?:\.\d+)?)h)?\s*(?:(?<minutes>\d+(?:\.\d+)?)m)?\s*(?<seconds>\d+(?:\.\d+)?)s/))
         result.api_time = match[:hours].to_f * 3600 + match[:minutes].to_f * 60 + match[:seconds].to_f
       else
         warn_for(id, "API time is unavailable in this agent log format")
       end
+      result.raw_api_time = result.api_time
+      subtract_claude_retry_backoff(id, output_path, claude, result) if claude
       if (match = output.match(/Total code changes:\s+\+(?<adds>\d+)\s+-(?<deletes>\d+)/)) ||
          (match = output.match(/^Changes\s+\+(?<adds>\d+)\s+-(?<deletes>\d+)/m))
         result.code_additions = match[:adds].to_i
@@ -197,8 +203,20 @@ module LocalEvaluation
         apply_diff_counts(id, info, result)
       end
 
+      claude_usage = claude && claude_token_usage(claude)
       usage = output.scan(/^\s*[\w.\/-]+\s+(?<input>\d+(?:\.\d+)?[kKmM]?) in,\s+(?<output>\d+(?:\.\d+)?[kKmM]?) out,\s+(?<cached>\d+(?:\.\d+)?[kKmM]?) cached/m)
-      if usage.any?
+      if claude_usage
+        # Claude Code counts only uncached tokens in input_tokens, so on a cache-heavy agentic run
+        # it reports tens of tokens where the model actually processed hundreds of thousands. The
+        # Copilot rows this column is shared with report total input with the cached part as a
+        # subset (verified against the collected runs: cached/in never exceeds 1.0), so match that.
+        result.input_tokens = claude_usage["input_tokens"].to_f +
+                              claude_usage["cache_read_input_tokens"].to_f +
+                              claude_usage["cache_creation_input_tokens"].to_f
+        result.output_tokens = claude_usage["output_tokens"].to_f
+        result.cached_tokens = claude_usage["cache_read_input_tokens"].to_f
+        result.total_tokens = result.input_tokens + result.output_tokens
+      elsif usage.any?
         result.input_tokens = usage.sum { |row| token_number(row[0]) }
         result.output_tokens = usage.sum { |row| token_number(row[1]) }
         result.cached_tokens = usage.sum { |row| token_number(row[2]) }
@@ -223,6 +241,88 @@ module LocalEvaluation
     rescue StandardError => e
       warn_for(id, "Agent metadata parse error: #{e.class}: #{e.message}")
       apply_diff_counts(id, info, result) if result.code_additions.nil?
+    end
+
+    # Final "result" record of a Claude Code stream-json transcript, which carries duration_api_ms
+    # and usage. Scanned from the end because it is the last line of the log; read_limited keeps the
+    # tail of oversized files, so it survives truncation, but the elision marker can leave a partial
+    # line next to it, hence the guarded parse.
+    def claude_stream_result(output)
+      output.lines.reverse_each do |line|
+        line = line.strip
+        next unless line.start_with?("{") && line.include?("\"result\"")
+        begin
+          record = JSON.parse(line)
+        rescue JSON::ParserError
+          next
+        end
+        return record if record.is_a?(Hash) && record["type"] == "result"
+      end
+      nil
+    end
+
+    def claude_token_usage(record)
+      # A background-task notification can produce another result whose usage covers
+      # just that turn. modelUsage remains cumulative for the whole session; use the
+      # last result's per-model counters once, never sum cumulative result records.
+      models = record["modelUsage"]
+      fields = {
+        "input_tokens" => "inputTokens", "output_tokens" => "outputTokens",
+        "cache_read_input_tokens" => "cacheReadInputTokens",
+        "cache_creation_input_tokens" => "cacheCreationInputTokens"
+      }
+      if models.is_a?(Hash) && !models.empty? && models.values.all? do |usage|
+           usage.is_a?(Hash) && %w[inputTokens outputTokens].all? { |field| usage.key?(field) } &&
+             fields.values.all? do |field|
+               value = usage.fetch(field, 0)
+               value.is_a?(Numeric) && value.finite? && value >= 0
+             end
+         end
+        return fields.to_h { |field, source| [field, models.values.sum { |usage| usage.fetch(source, 0) }] }
+      end
+
+      record["usage"] if record["usage"].is_a?(Hash)
+    end
+
+    def subtract_claude_retry_backoff(id, output_path, record, result)
+      # Only completed sessions establish that the announced retry waits elapsed.
+      return unless record["subtype"] == "success" && record["is_error"] == false
+
+      retries = []
+      seen = {}
+      # Read the full stream: read_limited omits the middle of very large transcripts,
+      # and a retry there must still be counted. Tool text quoting JSON is not an event.
+      File.foreach(output_path, encoding: Encoding::UTF_8) do |line|
+        next unless line.include?("api_retry")
+
+        begin
+          event = JSON.parse(line.scrub)
+        rescue JSON::ParserError
+          raise "malformed retry event" if line.match?(/\A\s*\{.*"subtype"\s*:\s*"api_retry"/)
+          next
+        end
+        next unless event.is_a?(Hash) && event["type"] == "system" && event["subtype"] == "api_retry"
+        next unless event["session_id"] == record["session_id"]
+        next if event["uuid"] && seen[event["uuid"]]
+
+        delay = event["retry_delay_ms"]
+        raise "invalid retry_delay_ms" unless delay.is_a?(Integer) && delay >= 0
+
+        retries << delay
+        seen[event["uuid"]] = true if event["uuid"]
+      end
+      return if retries.empty?
+
+      seconds = retries.sum / 1000.0
+      [result.raw_total_time, result.raw_api_time].compact.each do |duration|
+        raise "retry backoff exceeds recorded duration" if seconds > duration
+      end
+      result.total_time = (result.raw_total_time - seconds).round(6) if result.raw_total_time
+      result.api_time = (result.raw_api_time - seconds).round(6) if result.raw_api_time
+      result.agent_retry_count = retries.size
+      result.agent_retry_backoff_seconds = seconds
+    rescue StandardError => e
+      warn_for(id, "Retry backoff was not subtracted: #{e.message}")
     end
 
     def token_number(value)
@@ -540,6 +640,7 @@ module LocalEvaluation
         benchmark_wall_times benchmark_config_sha256 timing_fixed timing_fix_issue_categories
         original_source_commit corrected_source_commit original_source_digest corrected_source_digest
         original_source_url corrected_source_url source_correction_amendment_sha256
+        raw_api_time raw_total_time agent_retry_count agent_retry_backoff_seconds
       ]
       rows = results.map do |_id, result|
         [result.benchmark, result.model, result.par_type, result.run, result.input_tokens,
@@ -553,7 +654,9 @@ module LocalEvaluation
          result.original_source_commit, result.corrected_source_commit,
          result.original_source_digest, result.corrected_source_digest,
          result.original_source_url, result.corrected_source_url,
-         result.source_correction_amendment_sha256]
+         result.source_correction_amendment_sha256,
+         result.raw_api_time, result.raw_total_time,
+         result.agent_retry_count, result.agent_retry_backoff_seconds]
       end
       csv = CSV.generate { |out| out << headers; rows.each { |row| out << row } }
       LocalEvaluation.atomic_write(path, csv)

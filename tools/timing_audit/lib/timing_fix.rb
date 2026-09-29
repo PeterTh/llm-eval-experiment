@@ -11,6 +11,7 @@ require "tempfile"
 require "tmpdir"
 require "yaml"
 require_relative "timing_audit"
+require_relative "timing_fix_evidence"
 
 module TimingFix
   SCHEMA_VERSION = 1
@@ -41,16 +42,18 @@ module TimingFix
   ].freeze
 
   class InventoryBuilder
-    def initialize(audit_root:, output_dir:, trial_size: DEFAULT_TRIAL_SIZE)
+    def initialize(audit_root:, output_dir:, trial_size: DEFAULT_TRIAL_SIZE, context_path: nil)
       @audit_root = File.realpath(audit_root)
       @output_dir = File.expand_path(output_dir)
       @trial_size = Integer(trial_size)
+      @context_path = context_path
       raise "Trial size must be positive" unless @trial_size.positive?
     end
 
     def run
       raise "Output already exists: #{@output_dir}" if File.exist?(@output_dir)
       FileUtils.mkdir_p(@output_dir)
+      created_output = true
 
       audit_manifest = YAML.safe_load(File.read(File.join(@audit_root, "manifest.yaml")), aliases: false)
       final_metadata = YAML.safe_load(File.read(File.join(@audit_root, "final", "metadata.yaml")), aliases: false)
@@ -62,6 +65,7 @@ module TimingFix
                               .to_h { |decision| [decision.fetch("program_id"), decision] }
       correction_ids = File.readlines(File.join(@audit_root, "final", "correction-ids.txt"), chomp: true)
                            .reject(&:empty?)
+      raise "Correction IDs must be unique" unless correction_ids.uniq == correction_ids
       roots = final_metadata.fetch("roots")
 
       records = correction_ids.map do |id|
@@ -84,7 +88,7 @@ module TimingFix
       copied_template = File.join(@output_dir, "prompt-template.txt")
       copied_schema = File.join(@output_dir, "proposal-schema.json")
       copied_runner = File.join(@output_dir, "runner-snapshot.rb")
-      TimingAudit.atomic_write(copied_template, File.binread(template_path))
+      TimingAudit.atomic_write(copied_template, TimingFixEvidence.add_context(@output_dir, File.read(template_path), @context_path))
       TimingAudit.atomic_write(copied_schema, File.binread(schema_path))
       TimingAudit.atomic_write(copied_runner, File.binread(runner_path))
       TimingAudit.atomic_write(File.join(@output_dir, "inventory.jsonl"), TimingAudit.dump_jsonl(records))
@@ -100,11 +104,13 @@ module TimingFix
         "generated_source" => generated,
         "contract" => "fix only canonical timing measurement; preserve all non-timing behavior",
         "trial" => { "size" => trial_ids.size, "ids" => trial_ids },
-        "artifacts" => {
+        "artifacts" => TimingFixEvidence.bind(@output_dir, {
           "prompt_template_sha256" => TimingAudit.sha256_file(copied_template),
           "proposal_schema_sha256" => TimingAudit.sha256_file(copied_schema),
-          "runner_sha256" => TimingAudit.sha256_file(copied_runner)
-        }
+          "runner_sha256" => TimingAudit.sha256_file(copied_runner),
+          "inventory_sha256" => TimingAudit.sha256_file(File.join(@output_dir, "inventory.jsonl")),
+          "trial_ids_sha256" => TimingAudit.sha256_file(File.join(@output_dir, "trial-ids.txt"))
+        })
       }
       TimingAudit.atomic_write(File.join(@output_dir, "manifest.yaml"), YAML.dump(manifest))
       puts "Prepared timing-fix proposal inventory: #{records.size} records"
@@ -112,7 +118,7 @@ module TimingFix
       trial_ids.each { |id| puts "  #{id}" }
       manifest
     rescue Exception
-      FileUtils.remove_entry_secure(@output_dir) if File.directory?(@output_dir) && !File.exist?(File.join(@output_dir, "manifest.yaml"))
+      FileUtils.remove_entry_secure(@output_dir) if created_output && File.directory?(@output_dir) && !File.exist?(File.join(@output_dir, "manifest.yaml"))
       raise
     end
 
@@ -158,7 +164,7 @@ module TimingFix
           end
         end,
         selected.count { |entry| entry.fetch("model") == record.fetch("model") },
-        record.fetch("overall_score") >= 9 ? 0 : 1,
+        record.fetch("overall_score").to_i >= 9 ? 0 : 1,
         Digest::SHA256.hexdigest(record.fetch("id"))
       ]
     end
@@ -318,6 +324,7 @@ module TimingFix
     end
 
     def verify_artifact_hashes!
+      TimingFixEvidence.verify_artifact!(@output_dir, @manifest)
       artifacts = @manifest.fetch("artifacts")
       {
         "prompt_template_sha256" => File.join(@output_dir, "prompt-template.txt"),
@@ -329,6 +336,9 @@ module TimingFix
       unless TimingAudit.sha256_file(__FILE__) == artifacts.fetch("runner_sha256")
         raise "Current timing-fix runner differs from the prepared immutable snapshot"
       end
+      { "inventory_sha256" => "inventory.jsonl", "trial_ids_sha256" => "trial-ids.txt" }.each do |key, name|
+        raise "Timing-fix inventory changed" if artifacts[key] && artifacts[key] != TimingAudit.sha256_file(File.join(@output_dir, name))
+      end
     end
 
     def proposal_path(id)
@@ -338,7 +348,9 @@ module TimingFix
     def valid_existing_proposal?(id)
       path = proposal_path(id)
       return false unless File.file?(path)
-      @validator.validate!(JSON.parse(File.read(path)), expected_id: id)
+      proposal = JSON.parse(File.read(path))
+      @validator.validate!(proposal, expected_id: id)
+      TimingFixEvidence.verify_response!(@output_dir, id, proposal, @records_by_id.fetch(id))
     rescue StandardError => error
       warn "Ignoring invalid existing proposal #{id}: #{error.message}"
       false
@@ -349,8 +361,9 @@ module TimingFix
       prompt = build_prompt(record)
       raise "Prompt exceeds #{TimingAudit::MAX_PROMPT_BYTES} bytes for #{id}" if prompt.bytesize > TimingAudit::MAX_PROMPT_BYTES
       last_error = nil
+      first_attempt = TimingFixEvidence.next_attempt(@output_dir, id)
       @retries.times do |offset|
-        attempt = offset + 1
+        attempt = first_attempt + offset
         begin
           run_attempt(record, prompt, attempt, worker)
           @mutex.synchronize do
@@ -395,7 +408,7 @@ module TimingFix
       status = nil
       timed_out = false
 
-      Dir.mktmpdir("llm-timing-fix-") do |temporary_dir|
+      Dir.mktmpdir("llm-timing-fix-", "/tmp") do |temporary_dir|
         last_message = File.join(temporary_dir, "last-message.json")
         argv = @command.argv(schema_path: @schema_path, output_path: last_message)
         Tempfile.create(["timing-fix-prompt-", ".txt"], temporary_dir) do |input|
@@ -440,13 +453,19 @@ module TimingFix
           "source_tree_oid" => record.fetch("source_tree_oid"),
           "runner_sha256" => @manifest.fetch("artifacts").fetch("runner_sha256")
         }
+        metadata.merge!(TimingFixEvidence.stream_metadata(stdout_path, stderr_path))
         TimingAudit.atomic_write(metadata_path, YAML.dump(metadata))
         raise "Codex invocation timed out after #{@timeout}s" if timed_out
         raise "Codex exited #{status&.exitstatus || 'without status'}" unless status&.success?
         raise "Codex did not write its last message" unless File.file?(last_message)
+        TimingAudit.verify_static_events!(stdout_path)
         proposal = JSON.parse(File.read(last_message))
         @validator.validate!(proposal, expected_id: id)
-        TimingAudit.atomic_write(proposal_path(id), JSON.pretty_generate(proposal) + "\n")
+        serialized = JSON.pretty_generate(proposal) + "\n"
+        metadata["result_sha256"] = TimingAudit.sha256_bytes(serialized)
+        metadata["static_only_verified"] = true
+        TimingAudit.atomic_write(metadata_path, YAML.dump(metadata))
+        TimingAudit.atomic_write(proposal_path(id), serialized)
       end
     end
 
@@ -504,6 +523,7 @@ module TimingFix
         raise "Missing proposal #{id}" unless File.file?(path)
         proposal = JSON.parse(File.read(path))
         @validator.validate!(proposal, expected_id: id)
+        TimingFixEvidence.verify_response!(@output_dir, id, proposal, @records_by_id.fetch(id))
         proposal
       end
       statuses = proposals.group_by { |proposal| proposal.fetch("status") }.transform_values(&:size)

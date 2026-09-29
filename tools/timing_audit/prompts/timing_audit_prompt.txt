@@ -10,6 +10,10 @@ Benchmark: %{benchmark}
 Backend: %{par_type}
 Canonical output label parsed as the benchmark time: %{metric_label}
 
+Review the actual non-validation benchmark execution path, including any dispatch
+or timing differences from validation mode. A successful small-input validation run
+is only a functional filter; it is not evidence that the benchmark timer is valid.
+
 TIMING CONTRACT
 
 The canonical reported time must represent the completion time of the intended timed

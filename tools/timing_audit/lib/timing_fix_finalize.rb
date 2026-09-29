@@ -6,6 +6,7 @@ require "json"
 require "open3"
 require "yaml"
 require_relative "timing_audit"
+require_relative "timing_fix_evidence"
 
 module TimingFixFinalize
   SCHEMA_VERSION = 1
@@ -69,6 +70,7 @@ module TimingFixFinalize
     end
 
     FileUtils.mkdir_p(output_dir)
+    created_output = true
     corrections_path = File.join(output_dir, "corrections.jsonl")
     ids_path = File.join(output_dir, "correction-ids.txt")
     TimingAudit.atomic_write(corrections_path, TimingAudit.dump_jsonl(corrections))
@@ -107,7 +109,7 @@ module TimingFixFinalize
     puts "Finalized #{corrections.size} accepted timing-only corrections at #{corrected_commit}"
     manifest
   rescue Exception
-    if defined?(output_dir) && File.directory?(output_dir) &&
+    if created_output && defined?(output_dir) && File.directory?(output_dir) &&
        !File.exist?(File.join(output_dir, "manifest.yaml"))
       FileUtils.remove_entry_secure(output_dir)
     end
@@ -126,13 +128,17 @@ module TimingFixFinalize
     raise "Proposal identity mismatch for #{id}" unless proposal.fetch("program_id") == id
     raise "Review result identity mismatch for #{id}" unless review.fetch("program_id") == id
     raise "Review summary/result mismatch for #{id}" unless review_summary.fetch("verdict") == review.fetch("verdict")
+    raise "Proposal changed since independent review for #{id}" unless review_record.fetch("fix_proposal_file_sha256") == TimingAudit.sha256_file(proposal_path)
+    TimingFixEvidence.verify_response!(proposal_root, id, proposal, proposal_record)
+    TimingFixEvidence.verify_response!(review_root, id, review, review_record)
 
     adjudication = nil
     decision_basis = "independent_postfix_review"
-    if review.fetch("verdict") != "accept"
+    if review.fetch("verdict") != "accept" || review.fetch("confidence") != "high"
       raise "Missing adjudication for disputed correction #{id}" unless adjudication_summary
       adjudication_path = File.join(adjudication_root, "results", "#{id}.json")
       adjudication = JSON.parse(File.read(adjudication_path))
+      TimingFixEvidence.verify_response!(adjudication_root, id, adjudication, review_record)
       unless adjudication.fetch("program_id") == id && adjudication.fetch("final_verdict") == "accept" &&
              adjudication_summary.fetch("final_verdict") == "accept"
         raise "Correction #{id} did not receive an accepting adjudication"
@@ -224,8 +230,8 @@ module TimingFixFinalize
     raise "Corrected commit must be a full Git object ID" unless corrected_commit.match?(/\A[0-9a-f]{40}\z/)
     head = git_capture(source_root, "rev-parse", "HEAD").strip
     raise "Source repository HEAD is #{head}, expected #{corrected_commit}" unless head == corrected_commit
-    status = git_capture(source_root, "status", "--porcelain=v1", "--untracked-files=all")
-    raise "Source repository is not clean" unless status.empty?
+    status = git_capture(source_root, "status", "--porcelain=v1", "--untracked-files=no")
+    raise "Source repository has tracked modifications" unless status.empty?
   end
 
   def repository_https_url(source_root)

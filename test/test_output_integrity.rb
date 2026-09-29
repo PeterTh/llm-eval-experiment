@@ -41,6 +41,164 @@ class LocalEvaluationOutputIntegrityTest < Minitest::Test
     assert_equal 2_160_100.0, result.total_tokens
   end
 
+  def test_claude_stream_json_result_record_is_parsed
+    pipeline = metadata_pipeline
+    # Claude Code reports no code churn, so the diff fallback has to supply it
+    benchmarks = File.join(@tmp, "benchmarks")
+    FileUtils.mkdir_p(File.join(benchmarks, "matmul"))
+    FileUtils.mkdir_p(File.join(benchmarks, "common"))
+    File.write(File.join(benchmarks, "matmul", "matmul.cpp"), "int main() {\n  return 0;\n}\n")
+    File.write(File.join(benchmarks, "common", "util.h"), "#pragma once\n")
+    pipeline.instance_variable_set(:@manifest, Struct.new(:benchmarks_root).new(benchmarks))
+    generated = File.join(@tmp, "claude")
+    FileUtils.mkdir_p(File.join(generated, "matmul"))
+    FileUtils.mkdir_p(File.join(generated, "common"))
+    File.write(File.join(generated, "matmul", "matmul.cpp"), "#include <omp.h>\nint main() {\n  return 0;\n}\n")
+    File.write(File.join(generated, "common", "util.h"), "#pragma once\n")
+
+    result = parse_metadata(pipeline, "claude", <<~OUTPUT, info: { "benchmark" => "matmul" })
+      {"type":"system","subtype":"init","tools":["Bash","Edit","Read"]}
+      {"type":"assistant","message":{"content":[{"type":"text","text":"parallelizing"}]}}
+      {"type":"result","subtype":"success","is_error":false,"duration_ms":412350,"duration_api_ms":398210,"num_turns":57,"result":"done","total_cost_usd":1.83,"rate_limits":null,"usage":{"input_tokens":12500,"output_tokens":3400,"cache_read_input_tokens":980000,"cache_creation_input_tokens":4200}}
+    OUTPUT
+
+    assert_equal 398.21, result.api_time
+    # input is the total the model processed (12500 uncached + 980000 cache read + 4200 cache
+    # creation), matching the Copilot rows where the cached figure is a subset of the input figure
+    assert_equal 996_700.0, result.input_tokens
+    assert_equal 3_400.0, result.output_tokens
+    assert_equal 980_000.0, result.cached_tokens
+    assert_equal 1_000_100.0, result.total_tokens
+    # no "Total code changes" line, so the churn must come from the source diff
+    assert_equal 1, result.code_additions
+    assert_equal 0, result.code_deletions
+    refute_includes pipeline.instance_variable_get(:@warnings).fetch("claude", []).join(" "),
+                    "No supported token-usage format found"
+  end
+
+  def test_claude_transcript_without_a_result_record_falls_back
+    pipeline = metadata_pipeline
+    result = parse_metadata(pipeline, "claude-truncated", <<~OUTPUT)
+      {"type":"system","subtype":"init","tools":["Bash"]}
+      {"type":"assistant","message":{"content":[{"type":"text","text":"killed by the timeout"}]}}
+    OUTPUT
+
+    assert_nil result.api_time
+    assert_nil result.total_tokens
+    warnings = pipeline.instance_variable_get(:@warnings).fetch("claude-truncated").join(" ")
+    assert_match(/API time is unavailable/, warnings)
+    assert_match(/No supported token-usage format found/, warnings)
+  end
+
+  def test_claude_background_notification_uses_cumulative_model_usage_once
+    result = parse_metadata(metadata_pipeline, "claude-notification", <<~OUTPUT)
+      {"type":"result","subtype":"success","is_error":false,"duration_api_ms":507462,"usage":{"input_tokens":90,"output_tokens":49121,"cache_read_input_tokens":3103521,"cache_creation_input_tokens":88971},"modelUsage":{"claude-sonnet-5":{"inputTokens":90,"outputTokens":49121,"cacheReadInputTokens":3103521,"cacheCreationInputTokens":88971}}}
+      {"type":"result","subtype":"success","is_error":false,"duration_api_ms":509252,"origin":{"kind":"task-notification"},"usage":{"input_tokens":2,"output_tokens":38,"cache_read_input_tokens":100914,"cache_creation_input_tokens":948},"modelUsage":{"claude-sonnet-5":{"inputTokens":92,"outputTokens":49159,"cacheReadInputTokens":3204435,"cacheCreationInputTokens":89919}}}
+    OUTPUT
+
+    assert_equal 3_294_446, result.input_tokens
+    assert_equal 49_159, result.output_tokens
+    assert_equal 3_204_435, result.cached_tokens
+    assert_equal 3_343_605, result.total_tokens
+    assert_equal 509.252, result.api_time
+    assert_equal 10.25, result.total_time
+    assert_equal 0, result.agent_retry_count
+  end
+
+  def test_claude_cumulative_usage_sums_models_in_the_final_record
+    result = parse_metadata(metadata_pipeline, "claude-multi-model", <<~OUTPUT)
+      {"type":"result","subtype":"success","is_error":false,"duration_api_ms":1000,"usage":{"input_tokens":1,"output_tokens":2},"modelUsage":{"first":{"inputTokens":10,"outputTokens":20,"cacheReadInputTokens":30,"cacheCreationInputTokens":40},"second":{"inputTokens":100,"outputTokens":200}}}
+    OUTPUT
+
+    assert_equal 180, result.input_tokens
+    assert_equal 220, result.output_tokens
+    assert_equal 30, result.cached_tokens
+    assert_equal 400, result.total_tokens
+  end
+
+  def test_claude_retry_backoff_is_deducted_once_and_survives_output_formats
+    pipeline = metadata_pipeline
+    output = <<~OUTPUT
+      {"type":"system","subtype":"api_retry","session_id":"main","uuid":"retry-1","retry_delay_ms":1250}
+      {"type":"system","subtype":"api_retry","session_id":"main","uuid":"retry-1","retry_delay_ms":1250}
+      {"type":"system","subtype":"api_retry","session_id":"other","retry_delay_ms":99000}
+      {"type":"assistant","message":{"content":[{"type":"text","text":"api_retry retry_delay_ms: 99000"}]}}
+      {"type":"system","subtype":"api_retry","session_id":"main","uuid":"retry-2","retry_delay_ms":250}
+      {"type":"result","subtype":"success","is_error":false,"session_id":"main","duration_api_ms":6000,"usage":{"input_tokens":10,"output_tokens":20}}
+    OUTPUT
+    result = nil
+    2.times do
+      result = parse_metadata(pipeline, "claude-retries", output)
+      assert_equal 10.25, result.raw_total_time
+      assert_equal 6.0, result.raw_api_time
+      assert_equal 8.75, result.total_time
+      assert_equal 4.5, result.api_time
+      assert_equal 2, result.agent_retry_count
+      assert_equal 1.5, result.agent_retry_backoff_seconds
+    end
+    assert_equal "Duration: 10.25 seconds\n", File.read(File.join(@tmp, "claude-retries", "timing.txt"))
+    assert_equal output, File.read(File.join(@tmp, "claude-retries", "output.txt"))
+
+    pipeline.instance_variable_set(:@run_dir, @tmp)
+    pipeline.send(:write_outputs, "claude-retries" => result)
+    csv = CSV.read(File.join(@tmp, "aggregate_results.csv"), headers: true).first
+    scored = LocalEvaluation::ScoringPipeline::AGGREGATE_HEADERS.zip(
+      LocalEvaluation::ScoringPipeline.send(:aggregate_row, result)
+    ).to_h
+    %w[raw_total_time raw_api_time total_time api_time agent_retry_count agent_retry_backoff_seconds].each do |field|
+      assert_equal result.public_send(field).to_s, csv[field]
+      assert_equal result.public_send(field), scored[field]
+    end
+    saved = LocalEvaluation.load_yaml(File.join(@tmp, "aggregate_results.yaml"), permitted_classes: [AggregateEvaluation])
+    assert_equal 1.5, saved.fetch("claude-retries").agent_retry_backoff_seconds
+  end
+
+  def test_claude_retry_backoff_in_the_middle_of_a_large_log_is_counted
+    pipeline = metadata_pipeline
+    pipeline.define_singleton_method(:read_limited) { |path| super(path, 1024) }
+    filler = JSON.generate("type" => "assistant", "text" => "x" * 1800) + "\n"
+    output = filler + <<~OUTPUT + filler + <<~RESULT
+      {"type":"system","subtype":"api_retry","session_id":"main","retry_delay_ms":500}
+    OUTPUT
+      {"type":"result","subtype":"success","is_error":false,"session_id":"main","duration_api_ms":6000,"usage":{"input_tokens":10,"output_tokens":20}}
+    RESULT
+    result = parse_metadata(pipeline, "claude-large", output)
+
+    assert_equal 1, result.agent_retry_count
+    assert_equal 0.5, result.agent_retry_backoff_seconds
+    assert_equal 9.75, result.total_time
+    assert_equal 5.5, result.api_time
+  end
+
+  def test_claude_invalid_retry_delay_keeps_raw_times_and_warns
+    [-1, "500", nil, 7000, 11000].each_with_index do |delay, index|
+      pipeline = metadata_pipeline
+      retry_event = JSON.generate("type" => "system", "subtype" => "api_retry", "retry_delay_ms" => delay)
+      result = parse_metadata(pipeline, "invalid-retry-#{index}", <<~OUTPUT)
+        #{retry_event}
+        {"type":"result","subtype":"success","is_error":false,"duration_api_ms":6000,"usage":{"input_tokens":10,"output_tokens":20}}
+      OUTPUT
+
+      assert_equal 10.25, result.total_time
+      assert_equal 6.0, result.api_time
+      assert_equal 0, result.agent_retry_count
+      assert_equal 0.0, result.agent_retry_backoff_seconds
+      assert_includes pipeline.instance_variable_get(:@warnings).fetch("invalid-retry-#{index}").join(" "),
+                      "Retry backoff was not subtracted"
+    end
+  end
+
+  def test_claude_failed_session_does_not_assume_announced_retry_wait_elapsed
+    result = parse_metadata(metadata_pipeline, "claude-failed", <<~OUTPUT)
+      {"type":"system","subtype":"api_retry","retry_delay_ms":60000}
+      {"type":"result","subtype":"success","is_error":true,"duration_api_ms":6000,"usage":{"input_tokens":10,"output_tokens":20}}
+    OUTPUT
+
+    assert_equal 10.25, result.total_time
+    assert_equal 6.0, result.api_time
+    assert_equal 0.0, result.agent_retry_backoff_seconds
+  end
+
   def test_missing_api_warning_is_present_and_idempotent
     pipeline = metadata_pipeline
     output = "Changes +14 -7\n[Usage] billed (input: 8301, output: 2722, cache_read: 57335)\n"
@@ -364,13 +522,13 @@ class LocalEvaluationOutputIntegrityTest < Minitest::Test
     pipeline
   end
 
-  def parse_metadata(pipeline, id, output)
+  def parse_metadata(pipeline, id, output, info: {})
     source = File.join(@tmp, id)
     FileUtils.mkdir_p(source)
     File.write(File.join(source, "timing.txt"), "Duration: 10.25 seconds\n")
     File.write(File.join(source, "output.txt"), output)
     result = AggregateEvaluation.new("matmul", id, "omp", 1)
-    pipeline.send(:parse_agent_metadata, id, { "source_path" => source }, result)
+    pipeline.send(:parse_agent_metadata, id, { "source_path" => source }.merge(info), result)
     result
   end
 

@@ -246,6 +246,21 @@ after reviewing the risk because aggregate memory/PID containment is then unavai
 
 ## Timing audit and corrections
 
+Generation metadata from Claude Code uses the last result's cumulative `modelUsage`
+counters when available. A later background-task notification can have a per-turn
+`usage` value, so using that value would undercount the session's tokens. Total input
+includes uncached, cache-read, and cache-creation tokens; cached tokens remain a subset.
+
+For completed Claude sessions, aggregation subtracts the sum of recorded
+`system/api_retry.retry_delay_ms` waits from both generation `total_time` and
+`api_time`, excluding server retry backoff from the analysis. Original values are
+retained as `raw_total_time` and `raw_api_time`, together with `agent_retry_count`
+and `agent_retry_backoff_seconds`, in aggregate/scored YAML and CSV. Only explicitly
+recorded waits are subtracted; unrecorded failed-request latency is not estimated.
+The original transcripts and `timing.txt` remain the evidence, so repeated aggregation
+does not subtract the adjustment again. These fields concern generation time, not
+the execution times measured by benchmarking the generated programs.
+
 The static timing audit, timing-only correction, independent-review, adjudication,
 scoped-rerun, and final scoring utilities are maintained under
 [`tools/timing_audit`](tools/timing_audit). Run-specific decisions and ID lists do not

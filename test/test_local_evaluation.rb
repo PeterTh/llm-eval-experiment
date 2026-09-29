@@ -160,6 +160,41 @@ class LocalEvaluationTest < Minitest::Test
     assert_equal 9, result.term_signal
   end
 
+  def test_runtime_file_limit_accommodates_shared_windows_without_changing_other_limits
+    assert_equal 1024**3, LocalEvaluation::ExecutionLimits::RUNTIME_FILE_SIZE_MAX_BYTES
+    [LocalEvaluation::ExecutionLimits::VALIDATION, LocalEvaluation::ExecutionLimits::PERFORMANCE].each do |limits|
+      assert_equal 1024**3, limits.fetch(:file_size_max_bytes)
+      assert_operator limits.fetch(:file_size_max_bytes), :>, 512 * 1024**2 + 8192
+      assert_equal 8 * 1024**2, limits.fetch(:output_limit_bytes)
+      assert_equal 16 * 1024**2, limits.fetch(:io_write_bandwidth_bytes_per_second)
+    end
+    assert_equal 64 * 1024**3, LocalEvaluation::ExecutionLimits::VALIDATION.fetch(:memory_max_bytes)
+    assert_equal 256 * 1024**3, LocalEvaluation::ExecutionLimits::PERFORMANCE.fetch(:memory_max_bytes)
+    assert_equal 256, LocalEvaluation::ExecutionLimits::VALIDATION.fetch(:tasks_max)
+    assert_equal 512, LocalEvaluation::ExecutionLimits::PERFORMANCE.fetch(:tasks_max)
+  end
+
+  def test_runtime_file_limit_is_inherited_and_still_enforced
+    runner = LocalEvaluation::ProcessRunner.new
+    limit = LocalEvaluation::ExecutionLimits::RUNTIME_FILE_SIZE_MAX_BYTES
+    # Sparse local files exercise ftruncate without allocating a benchmark-sized
+    # working set. This unit test bypasses only the separate systemd wrapper.
+    wrapper = ->(argv, **) { [argv, nil, nil] }
+    LocalEvaluation::SystemdContainment.stub(:wrap, wrapper) do
+      script = 'puts Process.getrlimit(:FSIZE).join(":"); File.open(ARGV[0], "w") { |f| f.truncate(Integer(ARGV[1])) }'
+      result = runner.run(argv: [RbConfig.ruby, "-e", script, File.join(@tmp, "shared-window"), (512 * 1024**2 + 8192).to_s],
+        prefix: File.join(@tmp, "shared-window-check"), timeout: 5,
+        limits: LocalEvaluation::ExecutionLimits::PERFORMANCE)
+      assert result.success
+      assert_equal "#{limit}:#{limit}\n", File.read(File.join(@tmp, "shared-window-check_stdout.log"))
+      result = runner.run(argv: [RbConfig.ruby, "-e", script, File.join(@tmp, "oversize-file"), (limit + 1).to_s],
+        prefix: File.join(@tmp, "oversize-file-check"), timeout: 5,
+        limits: LocalEvaluation::ExecutionLimits::PERFORMANCE)
+      refute result.success
+      assert_equal Signal.list.fetch("XFSZ"), result.term_signal
+    end
+  end
+
   def test_atomic_write_replaces_complete_file
     path = File.join(@tmp, "state.yaml")
     LocalEvaluation.atomic_write(path, "old")
@@ -344,7 +379,7 @@ class LocalEvaluationTest < Minitest::Test
     assert_equal "frozen", frozen["state"]
   end
 
-  def test_agent_metadata_parses_copilot_pi_and_codex_formats
+  def test_agent_metadata_parses_copilot_pi_codex_and_claude_formats
     pipeline = LocalEvaluation::AggregatePipeline.allocate
     pipeline.instance_variable_set(:@warnings, {})
 
@@ -364,6 +399,16 @@ class LocalEvaluationTest < Minitest::Test
     codex = aggregate_metadata(pipeline, "codex", "Total code changes: +3 -2\ntokens used\n49,867\n")
     assert_equal 49_867.0, codex.total_tokens
     assert_nil codex.input_tokens
+
+    claude = aggregate_metadata(pipeline, "claude", <<~OUT)
+      {"type":"system","subtype":"init","tools":["Bash","Edit"]}
+      {"type":"result","subtype":"success","is_error":false,"duration_ms":70000,"duration_api_ms":62500,"num_turns":12,"result":"done","total_cost_usd":0.42,"rate_limits":null,"usage":{"input_tokens":8301,"output_tokens":2722,"cache_read_input_tokens":57335}}
+    OUT
+    assert_equal 62.5, claude.api_time
+    assert_equal 65_636.0, claude.input_tokens # 8301 uncached + 57335 cache read
+    assert_equal 2_722.0, claude.output_tokens
+    assert_equal 57_335.0, claude.cached_tokens
+    assert_equal 68_358.0, claude.total_tokens
   end
 
   def test_scoring_requires_reviewed_ordered_thresholds_and_scores_fastest

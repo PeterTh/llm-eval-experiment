@@ -7,6 +7,7 @@ module LocalEvaluation
       benchmark_wall_times benchmark_config_sha256 timing_fixed timing_fix_issue_categories
       original_source_commit corrected_source_commit original_source_digest corrected_source_digest
       original_source_url corrected_source_url source_correction_amendment_sha256
+      raw_api_time raw_total_time agent_retry_count agent_retry_backoff_seconds
     ].freeze
 
     def self.prepare(run_dir:, exact_id: nil, filter: nil, dry_run: false)
@@ -282,7 +283,9 @@ module LocalEvaluation
        result.original_source_commit, result.corrected_source_commit,
        result.original_source_digest, result.corrected_source_digest,
        result.original_source_url, result.corrected_source_url,
-       result.source_correction_amendment_sha256]
+       result.source_correction_amendment_sha256,
+       result.raw_api_time, result.raw_total_time,
+       result.agent_retry_count, result.agent_retry_backoff_seconds]
     end
     private_class_method :aggregate_row
   end

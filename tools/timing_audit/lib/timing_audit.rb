@@ -68,10 +68,11 @@ module TimingAudit
 
   DISABLED_FEATURES = %w[
     apps auth_elicitation browser_use browser_use_external
-    browser_use_full_cdp_access computer_use in_app_browser in_app_updates
-    image_generation memories mentions_v2 multi_agent multi_agent_v2
+    browser_use_full_cdp_access code_mode code_mode_host computer_use goals hooks
+    in_app_browser in_app_updates image_generation memories mentions_v2 multi_agent multi_agent_v2
     plugin_sharing plugins remote_plugin skill_mcp_dependency_install
-    tool_call_mcp_elicitation tool_suggest workspace_dependencies
+    shell_snapshot shell_tool skill_search sleep_tool tool_call_mcp_elicitation
+    tool_suggest unified_exec view_image workspace_dependencies
   ].freeze
 
   module_function
@@ -114,7 +115,23 @@ module TimingAudit
   end
 
   def dump_jsonl(records)
-    records.map { |record| JSON.generate(record) }.join("\n") + "\n"
+    records.map { |record| JSON.generate(record) + "\n" }.join
+  end
+
+  def verify_static_events!(path)
+    completed = false
+    File.foreach(path) do |line|
+      event = JSON.parse(line)
+      # Codex also emits diagnostic items (for example, confirming that the
+      # deliberately disabled code-mode host is unavailable). Diagnostics are
+      # not tool calls. A completed turn and validated response remain required.
+      if (item = event["item"]) && !%w[agent_message reasoning error].include?(item["type"])
+        raise "Static-only audit used a prohibited item: #{item['type']} in #{path}"
+      end
+      completed ||= event["type"] == "turn.completed"
+    end
+    raise "Audit event log has no completed turn: #{path}" unless completed
+    true
   end
 
   def capture!(*argv)
@@ -122,6 +139,35 @@ module TimingAudit
     return stdout if status.success?
 
     raise "Command failed (#{argv.join(' ')}): #{stderr.strip}"
+  end
+
+  def derive_inventory(parent_root:, output_dir:, ids:, provenance:)
+    raise "Output already exists: #{output_dir}" if File.exist?(output_dir)
+    manifest = YAML.safe_load_file(File.join(parent_root, "manifest.yaml"), aliases: false)
+    records = load_jsonl(File.join(parent_root, "inventory.jsonl"))
+    by_id = records.to_h { |record| [record.fetch("id"), record] }
+    raise "Duplicate derived inventory IDs" unless ids.uniq == ids
+    selected = ids.sort.map { |id| by_id.fetch(id) }
+    %w[prompt-template.txt result-schema.json runner-snapshot.rb].each do |name|
+      atomic_write(File.join(output_dir, name), File.binread(File.join(parent_root, name)))
+    end
+    atomic_write(File.join(output_dir, "inventory.jsonl"), dump_jsonl(selected))
+    atomic_write(File.join(output_dir, "trial-ids.txt"), "")
+    manifest["created_at"] = utc_now
+    manifest["selection"] = manifest.fetch("selection").merge("records" => selected.size)
+    manifest["trial"] = { "size" => 0, "ids" => [] }
+    manifest["artifacts"]["inventory_sha256"] = sha256_file(File.join(output_dir, "inventory.jsonl"))
+    manifest["artifacts"]["trial_ids_sha256"] = sha256_file(File.join(output_dir, "trial-ids.txt"))
+    manifest.merge!(provenance)
+    atomic_write(File.join(output_dir, "manifest.yaml"), YAML.dump(manifest))
+  end
+
+  def adjudication_required?(first, second, include_uncertain: false)
+    return true if first.fetch("verdict") != second.fetch("verdict")
+    include_uncertain && (
+      [first, second].any? { |r| r.fetch("verdict") == "ambiguous" || r.fetch("confidence") != "high" } ||
+      first.fetch("issue_categories").sort != second.fetch("issue_categories").sort ||
+      first.fetch("timing_only_fix_possible") != second.fetch("timing_only_fix_possible"))
   end
 
   class SourceRepository
@@ -264,8 +310,10 @@ module TimingAudit
   class InventoryBuilder
     attr_reader :release_root, :source_root, :output_dir, :trial_size
 
-    def initialize(release_root:, source_root:, output_dir:, trial_size: DEFAULT_TRIAL_SIZE)
-      @release_root = File.realpath(release_root)
+    def initialize(release_root: DEFAULT_RELEASE_ROOT, source_root:, output_dir:, trial_size: DEFAULT_TRIAL_SIZE,
+                   validation_run: nil)
+      @validation_run = validation_run && File.realpath(validation_run)
+      @release_root = @validation_run ? nil : File.realpath(release_root)
       @source_root = File.realpath(source_root)
       @output_dir = File.expand_path(output_dir)
       @trial_size = Integer(trial_size)
@@ -275,15 +323,12 @@ module TimingAudit
     def run
       raise "Output already exists: #{@output_dir}" if File.exist?(@output_dir)
       FileUtils.mkdir_p(@output_dir)
+      created_output = true
 
-      repositories_path = File.join(@release_root, "data/provenance/repositories.yaml")
-      repositories = YAML.safe_load(File.read(repositories_path), aliases: false)
-      generated = repositories.fetch("generated_programs")
+      generated, dataset_path, records, selection, provenance = inventory_inputs
       commit = generated.fetch("commit")
       repository = SourceRepository.new(root: @source_root, commit: commit)
-      dataset_path = File.join(@release_root, "data/scoring/scored_results.csv")
-      records = selected_rows(dataset_path)
-      puts "Preparing immutable source metadata for #{records.size} successful MPI/hybrid records"
+      puts "Preparing immutable source metadata for #{records.size} eligible MPI/hybrid records"
 
       records.each_with_index do |record, index|
         record.merge!(repository.source_record(record.fetch("source_prefix")))
@@ -311,12 +356,7 @@ module TimingAudit
         "release_root" => @release_root,
         "dataset_path" => dataset_path,
         "dataset_sha256" => TimingAudit.sha256_file(dataset_path),
-        "selection" => {
-          "parallelization_types" => %w[mpi hybrid],
-          "validation_status" => 5,
-          "benchmark_success" => true,
-          "records" => records.size
-        },
+        "selection" => selection.merge("records" => records.size),
         "generated_source" => {
           "root" => @source_root,
           "repository" => generated.fetch("repository"),
@@ -329,18 +369,99 @@ module TimingAudit
           "result_schema_sha256" => TimingAudit.sha256_file(copied_schema),
           "runner_sha256" => TimingAudit.sha256_file(copied_runner)
         }
-      }
+      }.merge(provenance)
+      manifest["artifacts"]["inventory_sha256"] = TimingAudit.sha256_file(File.join(@output_dir, "inventory.jsonl"))
+      manifest["artifacts"]["trial_ids_sha256"] = TimingAudit.sha256_file(File.join(@output_dir, "trial-ids.txt"))
       TimingAudit.atomic_write(File.join(@output_dir, "manifest.yaml"), YAML.dump(manifest))
       puts "Prepared #{@output_dir}"
       puts "Trial IDs:"
       trial_ids.each { |id| puts "  #{id}" }
       manifest
     rescue Exception
-      FileUtils.remove_entry_secure(@output_dir) if File.directory?(@output_dir) && !File.exist?(File.join(@output_dir, "manifest.yaml"))
+      FileUtils.remove_entry_secure(@output_dir) if created_output && File.directory?(@output_dir) && !File.exist?(File.join(@output_dir, "manifest.yaml"))
       raise
     end
 
     private
+
+    def inventory_inputs
+      return validation_inputs if @validation_run
+
+      repositories = YAML.safe_load_file(File.join(@release_root, "data/provenance/repositories.yaml"), aliases: false)
+      dataset_path = File.join(@release_root, "data/scoring/scored_results.csv")
+      [repositories.fetch("generated_programs"), dataset_path, selected_rows(dataset_path),
+       { "parallelization_types" => %w[mpi hybrid], "validation_status" => 5, "benchmark_success" => true }, {}]
+    end
+
+    def validation_inputs
+      require_relative "../../../lib/local_evaluation"
+      manifest = LocalEvaluation::Manifest.new(@validation_run)
+      # This is an offline evidence consumer, not a new validation execution.
+      # The manifest checksum, per-record metadata, and pinned source checkout
+      # bind the results without requiring access to the original GPUs/host.
+      source = manifest.data.fetch("experiment_repository")
+      raise "Validation source must be a pinned Git repository" unless source["git"] && !source["dirty"]
+      dataset_path = File.join(@validation_run, "validation/all_validation_results.yaml")
+      results = LocalEvaluation.load_yaml(dataset_path, permitted_classes: [ValidationResult])
+      raise "Validation results must be an array" unless results.is_a?(Array)
+      by_id = {}
+      results.each do |result|
+        raise "Unexpected validation result type" unless result.is_a?(ValidationResult)
+        id = result.id_string
+        raise "Duplicate validation result #{id}" if by_id.key?(id)
+        by_id[id] = result
+      end
+      unless by_id.keys.sort == manifest.runs.keys.sort
+        raise "Validation must be complete: result IDs do not exactly match the manifest"
+      end
+      stages = %w[basic_para validation_build validation_run internal_validation output_comparison]
+      manifest_digest = TimingAudit.sha256_file(manifest.path)
+      excluded = []
+      records = manifest.runs.sort.filter_map do |id, info|
+        result = by_id.fetch(id)
+        unless result.is_for(info.fetch("benchmark"), info.fetch("model"), info.fetch("par_type"), info.fetch("run"))
+          raise "Validation identity mismatch for #{id}"
+        end
+        values = stages.map { |stage| result.public_send(stage) }
+        unless values.all? { |value| value == true || value == false } &&
+               values.each_cons(2).none? { |previous, current| !previous && current }
+          raise "Inconsistent validation stages for #{id}"
+        end
+        metadata_path = File.join(@validation_run, "validation", id, "validation_metadata.yaml")
+        metadata = LocalEvaluation.load_yaml(metadata_path)
+        expected = { "id" => id, "manifest_sha256" => manifest_digest }.merge(
+          info.slice("benchmark", "model", "par_type", "run"))
+        unless expected.all? { |key, value| metadata[key] == value } &&
+               stages.all? { |stage| metadata.dig("stages", stage) == result.public_send(stage) }
+          raise "Validation metadata mismatch for #{id}"
+        end
+        prefix = File.join(info.fetch("batch"), id)
+        unless File.expand_path(info.fetch("source_path")) == File.join(manifest.data.fetch("experiments_root"), prefix)
+          raise "Validation source path mismatch for #{id}"
+        end
+        unless %w[mpi hybrid].include?(info.fetch("par_type")) && values.all?
+          excluded << { "program_id" => id, "par_type" => info.fetch("par_type"),
+                        "reason" => %w[mpi hybrid].include?(info.fetch("par_type")) ? "validation_failed" : "backend_out_of_scope",
+                        "failed_stage" => stages.find { |stage| !result.public_send(stage) } }
+          next
+        end
+        { "id" => id, "benchmark" => info.fetch("benchmark"), "model" => info.fetch("model"),
+          "par_type" => info.fetch("par_type"), "run" => info.fetch("run"),
+          "source_batch" => info.fetch("batch"), "source_prefix" => prefix,
+          "metric_label" => METRIC_LABELS.fetch(info.fetch("benchmark")),
+          "benchmark_median_time_ms" => nil, "overall_score" => nil, "benchmark_config_sha256" => nil,
+          "validation_metadata_sha256" => TimingAudit.sha256_file(metadata_path) }
+      end
+      excluded_path = File.join(@output_dir, "excluded.jsonl")
+      TimingAudit.atomic_write(excluded_path, TimingAudit.dump_jsonl(excluded))
+      generated = { "commit" => source.fetch("commit"),
+                    "repository" => TimingAudit.capture!("git", "-C", @source_root, "remote", "get-url", "origin").strip }
+      [generated, dataset_path, records,
+       { "parallelization_types" => %w[mpi hybrid], "validation_status" => 5,
+         "benchmark_success" => nil, "basis" => "validation_only", "validation_records" => results.size },
+       { "validation_run" => @validation_run, "evaluation_manifest_sha256" => manifest_digest,
+         "excluded_sha256" => TimingAudit.sha256_file(excluded_path) }]
+    end
 
     def selected_rows(dataset_path)
       source_prefixes = {}
@@ -406,7 +527,7 @@ module TimingAudit
           (entry.fetch("static_features").fetch("has_mpi_max") ? "max" : "no-max") == max_group
         end,
         selected.count { |entry| entry.fetch("model") == record.fetch("model") },
-        record.fetch("overall_score") >= 9 ? 0 : 1,
+        record.fetch("overall_score").to_i >= 9 ? 0 : 1,
         Digest::SHA256.hexdigest(record.fetch("id"))
       ]
     end
@@ -484,6 +605,7 @@ module TimingAudit
         "--model", @model,
         "--config", %(model_reasoning_effort="#{@effort}"),
         "--config", 'approval_policy="never"',
+        "--config", 'web_search="disabled"',
         "--sandbox", "read-only",
         "--ephemeral",
         "--ignore-user-config",
@@ -519,6 +641,7 @@ module TimingAudit
       @records = TimingAudit.load_jsonl(File.join(@output_dir, "inventory.jsonl"))
       @records_by_id = @records.to_h { |record| [record.fetch("id"), record] }
       @validator = ResultValidator.new(@records)
+      @verifier = AuditVerifier.new(@output_dir, @scope)
       generated = @manifest.fetch("generated_source")
       @repository = SourceRepository.new(root: generated.fetch("root"), commit: generated.fetch("commit"))
       @template = File.read(File.join(@output_dir, "prompt-template.txt"))
@@ -587,11 +710,15 @@ module TimingAudit
 
     def verify_artifact_hashes!
       artifacts = @manifest.fetch("artifacts")
-      {
+      paths = {
         "prompt_template_sha256" => File.join(@output_dir, "prompt-template.txt"),
         "result_schema_sha256" => @schema_path,
         "runner_sha256" => File.join(@output_dir, "runner-snapshot.rb")
-      }.each do |key, path|
+      }
+      { "inventory_sha256" => "inventory.jsonl", "trial_ids_sha256" => "trial-ids.txt" }.each do |key, name|
+        paths[key] = File.join(@output_dir, name) if artifacts.key?(key)
+      end
+      paths.each do |key, path|
         actual = TimingAudit.sha256_file(path)
         raise "Audit artifact digest mismatch for #{path}" unless actual == artifacts.fetch(key)
       end
@@ -604,7 +731,7 @@ module TimingAudit
     def valid_existing_result?(id)
       path = result_path(id)
       return false unless File.file?(path)
-      @validator.validate!(JSON.parse(File.read(path)), expected_id: id)
+      @verifier.verify_result!(id, JSON.parse(File.read(path)))
     rescue StandardError => error
       warn "Ignoring invalid existing result #{id}: #{error.message}"
       false
@@ -615,8 +742,10 @@ module TimingAudit
       prompt = build_prompt(record)
       raise "Prompt exceeds #{MAX_PROMPT_BYTES} bytes for #{id}" if prompt.bytesize > MAX_PROMPT_BYTES
       last_error = nil
+      previous_attempts = Dir[File.join(@output_dir, "logs", id, "attempt-*")].map { |path| File.basename(path).delete_prefix("attempt-").to_i }
+      first_attempt = previous_attempts.max.to_i + 1
       @retries.times do |offset|
-        attempt = offset + 1
+        attempt = first_attempt + offset
         begin
           run_attempt(record, prompt, attempt, worker)
           @mutex.synchronize do
@@ -627,7 +756,7 @@ module TimingAudit
         rescue Exception => error
           last_error = error
           @mutex.synchronize { warn "[#{worker}] attempt #{attempt}/#{@retries} failed for #{id}: #{error.message}" }
-          sleep([2**attempt, 20].min + rand) if attempt < @retries
+          sleep([2**(offset + 1), 20].min + rand) if offset + 1 < @retries
         end
       end
       raise last_error
@@ -700,17 +829,32 @@ module TimingAudit
           "prompt_bytes" => prompt.bytesize,
           "source_digest" => record.fetch("source_digest"),
           "source_tree_oid" => record.fetch("source_tree_oid"),
+          "events_sha256" => TimingAudit.sha256_file(stdout_path),
+          "stderr_sha256" => TimingAudit.sha256_file(stderr_path),
+          "usage" => File.foreach(stdout_path).filter_map { |line|
+            event = JSON.parse(line) rescue nil
+            event && event["type"] == "turn.completed" ? event["usage"] : nil
+          }.last,
+          "diagnostics" => TimingAudit.load_jsonl(stdout_path).filter_map { |event|
+            item = event["item"]
+            item["message"] if item && item["type"] == "error"
+          },
           "runner_sha256" => @manifest.fetch("artifacts").fetch("runner_sha256")
         }
         TimingAudit.atomic_write(metadata_path, YAML.dump(metadata))
         raise "Codex invocation timed out after #{@timeout}s" if timed_out
         raise "Codex exited #{status&.exitstatus || 'without status'}" unless status&.success?
         raise "Codex did not write its last message" unless File.file?(last_message)
+        TimingAudit.verify_static_events!(stdout_path)
 
         raw = File.read(last_message)
         result = JSON.parse(raw)
         @validator.validate!(result, expected_id: id)
-        TimingAudit.atomic_write(result_path(id), JSON.pretty_generate(result) + "\n")
+        serialized = JSON.pretty_generate(result) + "\n"
+        metadata["result_sha256"] = TimingAudit.sha256_bytes(serialized)
+        metadata["static_only_verified"] = true
+        TimingAudit.atomic_write(metadata_path, YAML.dump(metadata))
+        TimingAudit.atomic_write(result_path(id), serialized)
       end
     end
 
@@ -757,6 +901,13 @@ module TimingAudit
       raise "Scope must be trial or full" unless %w[trial full].include?(@scope)
       @records = TimingAudit.load_jsonl(File.join(@output_dir, "inventory.jsonl"))
       @records_by_id = @records.to_h { |record| [record.fetch("id"), record] }
+      raise "Duplicate inventory IDs" unless @records_by_id.size == @records.size
+      manifest = YAML.safe_load_file(File.join(@output_dir, "manifest.yaml"), aliases: false)
+      raise "Inventory count mismatch" unless manifest.dig("selection", "records") == @records.size
+      { "inventory_sha256" => "inventory.jsonl", "trial_ids_sha256" => "trial-ids.txt" }.each do |key, name|
+        expected = manifest.dig("artifacts", key)
+        raise "Inventory digest mismatch for #{name}" if expected && expected != TimingAudit.sha256_file(File.join(@output_dir, name))
+      end
       @validator = ResultValidator.new(@records)
     end
 
@@ -770,7 +921,7 @@ module TimingAudit
         path = File.join(@output_dir, "results", "#{id}.json")
         raise "Missing result #{id}" unless File.file?(path)
         result = JSON.parse(File.read(path))
-        @validator.validate!(result, expected_id: id)
+        verify_result!(id, result)
         result
       end
       write_summary(results)
@@ -778,11 +929,44 @@ module TimingAudit
       puts "Verified #{@scope} timing audit: #{results.size} records (#{VERDICTS.map { |v| "#{v}=#{counts.fetch(v, 0)}" }.join(', ')})"
       if @scope == "trial"
         pilot = results.find { |result| result.fetch("program_id") == KNOWN_INVALID_PILOT }
-        raise "Known pilot was not selected" unless pilot
-        raise "Known invalid pilot was classified #{pilot.fetch('verdict')}" unless pilot.fetch("verdict") == "invalid"
-        raise "Trial produced no valid result; rubric/output usability needs review" unless results.any? { |result| result.fetch("verdict") == "valid" }
-        raise "Trial produced no invalid result; rubric/output usability needs review" unless results.any? { |result| result.fetch("verdict") == "invalid" }
+        if @records_by_id.key?(KNOWN_INVALID_PILOT)
+          raise "Known pilot was not selected" unless pilot
+          raise "Known invalid pilot was classified #{pilot.fetch('verdict')}" unless pilot.fetch("verdict") == "invalid"
+        end
+        puts "Trial requires source-grounded quality review before expanding to the full inventory."
       end
+      true
+    end
+
+    def verify_result!(id, result)
+      @validator.validate!(result, expected_id: id)
+      path = File.join(@output_dir, "results", "#{id}.json")
+      attempts = Dir[File.join(@output_dir, "logs", id, "attempt-*", "metadata.yaml")]
+      accepted = attempts.any? do |metadata_path|
+        metadata = YAML.safe_load_file(metadata_path, aliases: false)
+        next false unless metadata["exit_code"] == 0 && !metadata["timed_out"]
+        event_path = File.join(File.dirname(metadata_path), "events.jsonl")
+        if metadata.key?("result_sha256")
+          next false unless metadata["result_sha256"] == TimingAudit.sha256_file(path)
+        else
+          # Legacy audit evidence has no explicit response digest. Match the
+          # actual JSON response rather than trusting only the exit status.
+          messages = TimingAudit.load_jsonl(event_path).filter_map do |event|
+            item = event["item"]
+            next unless event["type"] == "item.completed" && item && item["type"] == "agent_message"
+            JSON.parse(item["text"]) rescue nil
+          end
+          next false unless messages.last == result
+        end
+        if metadata["events_sha256"] && metadata["events_sha256"] != TimingAudit.sha256_file(event_path)
+          raise "Audit event digest mismatch for #{id}"
+        end
+        unless metadata["source_digest"] == @records_by_id.fetch(id).fetch("source_digest")
+          raise "Audit attempt source mismatch for #{id}"
+        end
+        TimingAudit.verify_static_events!(event_path)
+      end
+      raise "No verified static-only attempt for #{id}" unless accepted
       true
     end
 

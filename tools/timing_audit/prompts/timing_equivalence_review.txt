@@ -1,0 +1,28 @@
+Before rejecting a root-local duration, explicitly trace the first useful
+computation on every rank through called functions and its communication
+dependencies. A barrier pair alone is insufficient, but a later dependency can
+prove that the reporting root starts its timer before any useful computation:
+
+- Input supplied by a root-issued Scatter/Scatterv after the root starts timing can
+  gate the entire computation on all other ranks.
+- The first required pivot/panel broadcast can establish the same ordering if its
+  owner is the reporting root and no other rank can compute before receiving it.
+  Trace subcommunicator roots and multi-step broadcast dependencies when necessary.
+- If a final barrier, gather, or other proven completion dependency precedes the
+  root's stop, and relevant GPU work has also completed, this can establish a valid
+  global makespan without any duration reduction.
+
+Do not equate a potentially earlier non-root timestamp or waiting in a collective
+with useful work occurring before the root timer. Allocation, input setup, and
+constant-time dispatch/index bookkeeping do not, by themselves, invalidate a
+compute-only makespan; the contract already permits initialization outside timing.
+Conversely, independent numerical work, preprocessing that is part of the intended
+computation, halo packing/updates, or kernels that can start before the root timer
+must not be overlooked. A broadcast occurring only after that independent work is
+not an adequate start dependency.
+
+For an invalid root-local result, identify the actual first useful work that can
+escape the root's interval, or the concrete premature-stop/other timing defect.
+For a valid root-local result, cite both the work-start dependency and completed-work
+stop dependency, including device completion. Judge the actual source; do not infer
+either result from the presence or absence of MPI_MAX, Scatter, or Bcast alone.

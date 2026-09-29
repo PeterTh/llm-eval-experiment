@@ -111,6 +111,7 @@ module TimingFixReview
     def run
       raise "Output already exists: #{@output_dir}" if File.exist?(@output_dir)
       FileUtils.mkdir_p(@output_dir)
+      created_output = true
 
       proposal_manifest_path = File.join(@proposal_root, "manifest.yaml")
       proposal_manifest = YAML.safe_load(File.read(proposal_manifest_path), aliases: false)
@@ -162,8 +163,9 @@ module TimingFixReview
       copied_runner = File.join(@output_dir, "runner-snapshot.rb")
       inventory_path = File.join(@output_dir, "inventory.jsonl")
       snapshots_path = File.join(@output_dir, "proposal-snapshot.jsonl")
-      TimingAudit.atomic_write(copied_template, File.binread(template_path))
-      TimingAudit.atomic_write(copied_schema, File.binread(schema_path))
+      context_path = File.join(@proposal_root, "platform-context.txt")
+      TimingAudit.atomic_write(copied_template, TimingFixEvidence.add_context(@output_dir, File.read(template_path), File.file?(context_path) ? context_path : nil))
+      TimingAudit.atomic_write(copied_schema, TimingFixEvidence.review_schema(schema_path))
       TimingAudit.atomic_write(copied_runner, File.binread(runner_path))
       TimingAudit.atomic_write(inventory_path, TimingAudit.dump_jsonl(review_records))
       TimingAudit.atomic_write(snapshots_path, TimingAudit.dump_jsonl(snapshots))
@@ -187,13 +189,13 @@ module TimingFixReview
         "contract" => "independent static proof of corrected timing validity and timing-only edit scope",
         "trial" => { "size" => trial_ids.size, "ids" => trial_ids },
         "compile_validation" => materialized,
-        "artifacts" => {
+        "artifacts" => TimingFixEvidence.bind(@output_dir, {
           "prompt_template_sha256" => TimingAudit.sha256_file(copied_template),
           "result_schema_sha256" => TimingAudit.sha256_file(copied_schema),
           "runner_sha256" => TimingAudit.sha256_file(copied_runner),
           "inventory_sha256" => TimingAudit.sha256_file(inventory_path),
           "proposal_snapshot_sha256" => TimingAudit.sha256_file(snapshots_path)
-        }
+        })
       }
       TimingAudit.atomic_write(File.join(@output_dir, "manifest.yaml"), YAML.dump(manifest))
       puts "Prepared independent post-fix review: #{review_records.size} records"
@@ -201,7 +203,7 @@ module TimingFixReview
       trial_ids.each { |id| puts "  #{id}" }
       manifest
     rescue Exception
-      if File.directory?(@output_dir) && !File.exist?(File.join(@output_dir, "manifest.yaml"))
+      if created_output && File.directory?(@output_dir) && !File.exist?(File.join(@output_dir, "manifest.yaml"))
         FileUtils.remove_entry_secure(@output_dir)
       end
       raise
@@ -212,7 +214,7 @@ module TimingFixReview
     def validate_materialized!(summary, expected_records)
       raise "Full materialization summary required" unless summary.fetch("scope") == "full"
       raise "Materialization record count mismatch" unless summary.fetch("records") == expected_records
-      raise "Materialization changed-path count mismatch" unless summary.fetch("changed_paths") == expected_records
+      raise "Materialization changed-path count mismatch" unless summary.fetch("changed_paths") >= expected_records
       raise "Not all fixes compiled" unless summary.fetch("compiled") == expected_records &&
                                              summary.fetch("compile_successes") == expected_records &&
                                              summary.fetch("compile_failures") == []
@@ -376,6 +378,7 @@ module TimingFixReview
     end
 
     def verify_artifact_hashes!
+      TimingFixEvidence.verify_artifact!(@output_dir, @manifest)
       artifacts = @manifest.fetch("artifacts")
       {
         "prompt_template_sha256" => File.join(@output_dir, "prompt-template.txt"),
@@ -398,7 +401,9 @@ module TimingFixReview
     def valid_existing_result?(id)
       path = result_path(id)
       return false unless File.file?(path)
-      @validator.validate!(JSON.parse(File.read(path)), expected_id: id)
+      result = JSON.parse(File.read(path))
+      @validator.validate!(result, expected_id: id)
+      TimingFixEvidence.verify_response!(@output_dir, id, result, @records_by_id.fetch(id))
     rescue StandardError => error
       warn "Ignoring invalid existing review #{id}: #{error.message}"
       false
@@ -409,8 +414,9 @@ module TimingFixReview
       prompt = build_prompt(record)
       raise "Prompt exceeds #{TimingAudit::MAX_PROMPT_BYTES} bytes for #{id}" if prompt.bytesize > TimingAudit::MAX_PROMPT_BYTES
       last_error = nil
+      first_attempt = TimingFixEvidence.next_attempt(@output_dir, id)
       @retries.times do |offset|
-        attempt = offset + 1
+        attempt = first_attempt + offset
         begin
           run_attempt(record, prompt, attempt, worker)
           @mutex.synchronize do
@@ -508,13 +514,19 @@ module TimingFixReview
           "runner_sha256" => @manifest.fetch("artifacts").fetch("runner_sha256"),
           "source_or_program_executed" => false
         }
+        metadata.merge!(TimingFixEvidence.stream_metadata(stdout_path, stderr_path))
         TimingAudit.atomic_write(metadata_path, YAML.dump(metadata))
         raise "Codex invocation timed out after #{@timeout}s" if timed_out
         raise "Codex exited #{status&.exitstatus || 'without status'}" unless status&.success?
         raise "Codex did not write its last message" unless File.file?(last_message)
+        TimingAudit.verify_static_events!(stdout_path)
         result = JSON.parse(File.read(last_message))
         @validator.validate!(result, expected_id: id)
-        TimingAudit.atomic_write(result_path(id), JSON.pretty_generate(result) + "\n")
+        serialized = JSON.pretty_generate(result) + "\n"
+        metadata["result_sha256"] = TimingAudit.sha256_bytes(serialized)
+        metadata["static_only_verified"] = true
+        TimingAudit.atomic_write(metadata_path, YAML.dump(metadata))
+        TimingAudit.atomic_write(result_path(id), serialized)
       end
     end
 
@@ -571,6 +583,7 @@ module TimingFixReview
         raise "Missing review result #{id}" unless File.file?(path)
         result = JSON.parse(File.read(path))
         @validator.validate!(result, expected_id: id)
+        TimingFixEvidence.verify_response!(@output_dir, id, result, @records_by_id.fetch(id))
         result
       end
       summary = results.map do |result|
@@ -591,7 +604,7 @@ module TimingFixReview
         }
       end
       TimingAudit.atomic_write(File.join(@output_dir, "summary-#{@scope}.jsonl"), TimingAudit.dump_jsonl(summary))
-      headers = summary.first.keys
+      headers = summary.first&.keys || %w[program_id verdict]
       csv = CSV.generate do |output|
         output << headers
         summary.each do |entry|

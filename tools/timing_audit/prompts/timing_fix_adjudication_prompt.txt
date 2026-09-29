@@ -1,6 +1,6 @@
 You are the final static adjudicator for a disputed timing-only correction to a
-generated parallel benchmark. A prior independent reviewer rejected the correction.
-Determine whether that rejection is scientifically correct.
+generated parallel benchmark. A prior independent review was disputed or uncertain.
+Determine whether the corrected program satisfies the contract, resolving that review.
 
 This is a STATIC SOURCE REVIEW. Do not use tools, inspect the filesystem, compile, or
 execute code. The exact correction, prior review, pinned-environment evidence, and

@@ -30,14 +30,17 @@ module LocalEvaluation
   class InfrastructureError < StandardError; end
 
   module ExecutionLimits
+    # MPI shared-memory windows also consume file size (including on /dev/shm).
+    # Keep a finite cap with room for the established benchmark working sets.
+    RUNTIME_FILE_SIZE_MAX_BYTES = GIBIBYTE
     BUILD = { memory_max_bytes: 32 * GIBIBYTE, tasks_max: 256, output_limit_bytes: 8 * 1024 * 1024,
               file_size_max_bytes: GIBIBYTE, allowed_cpus: "0-15", cpu_quota_percent: 1600,
               io_write_bandwidth_bytes_per_second: IO_WRITE_BANDWIDTH_BYTES_PER_SECOND }.freeze
     VALIDATION = { memory_max_bytes: 64 * GIBIBYTE, tasks_max: 256, output_limit_bytes: 8 * 1024 * 1024,
-                   file_size_max_bytes: 64 * 1024 * 1024,
+                   file_size_max_bytes: RUNTIME_FILE_SIZE_MAX_BYTES,
                    io_write_bandwidth_bytes_per_second: IO_WRITE_BANDWIDTH_BYTES_PER_SECOND }.freeze
     PERFORMANCE = { memory_max_bytes: 256 * GIBIBYTE, tasks_max: 512, output_limit_bytes: 8 * 1024 * 1024,
-                    file_size_max_bytes: 64 * 1024 * 1024,
+                    file_size_max_bytes: RUNTIME_FILE_SIZE_MAX_BYTES,
                     io_write_bandwidth_bytes_per_second: IO_WRITE_BANDWIDTH_BYTES_PER_SECOND }.freeze
   end
 

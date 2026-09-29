@@ -41,6 +41,7 @@ module TimingFixAdjudication
     def run
       raise "Output already exists: #{@output_dir}" if File.exist?(@output_dir)
       FileUtils.mkdir_p(@output_dir)
+      created_output = true
       review_manifest_path = File.join(@review_root, "manifest.yaml")
       review_manifest = YAML.safe_load(File.read(review_manifest_path), aliases: false)
       records = TimingAudit.load_jsonl(File.join(@review_root, "inventory.jsonl"))
@@ -48,8 +49,8 @@ module TimingFixAdjudication
       snapshots = TimingAudit.load_jsonl(File.join(@review_root, "proposal-snapshot.jsonl"))
       snapshots_by_id = snapshots.to_h { |snapshot| [snapshot.fetch("program_id"), snapshot] }
       results = Dir[File.join(@review_root, "results", "*.json")].sort.map { |path| JSON.parse(File.read(path)) }
-      rejected = results.select { |result| result.fetch("verdict") == "reject" }
-      raise "Expected disputed post-fix reviews" if rejected.empty?
+      raise "Incomplete post-fix review results" unless results.map { |result| result.fetch("program_id") }.sort == records_by_id.keys.sort
+      rejected = results.select { |result| result.fetch("verdict") != "accept" || result.fetch("confidence") != "high" }
       review_validator = TimingFixReview::ResultValidator.new(records)
       selected_records = rejected.map do |result|
         id = result.fetch("program_id")
@@ -61,7 +62,7 @@ module TimingFixAdjudication
       selected_snapshots = rejected.map { |result| snapshots_by_id.fetch(result.fetch("program_id")) }
       selected_ids = selected_records.map { |record| record.fetch("id") }
       trial_ids = TRIAL_IDS.select { |id| selected_ids.include?(id) }
-      raise "Adjudication trial lost a representative class" unless trial_ids.size == TRIAL_IDS.size
+      trial_ids = TimingFix::TrialSelector.new(selected_records, 4).select if trial_ids.size != TRIAL_IDS.size
 
       environment = environment_evidence(review_manifest)
       template_path = File.expand_path("../prompts/timing_fix_adjudication_prompt.txt", __dir__)
@@ -73,8 +74,9 @@ module TimingFixAdjudication
       inventory_path = File.join(@output_dir, "inventory.jsonl")
       snapshot_path = File.join(@output_dir, "proposal-snapshot.jsonl")
       environment_path = File.join(@output_dir, "environment-evidence.yaml")
-      TimingAudit.atomic_write(copied_template, File.binread(template_path))
-      TimingAudit.atomic_write(copied_schema, File.binread(schema_path))
+      context_path = File.join(@review_root, "platform-context.txt")
+      TimingAudit.atomic_write(copied_template, TimingFixEvidence.add_context(@output_dir, File.read(template_path), File.file?(context_path) ? context_path : nil))
+      TimingAudit.atomic_write(copied_schema, TimingFixEvidence.review_schema(schema_path))
       TimingAudit.atomic_write(copied_runner, File.binread(runner_path))
       TimingAudit.atomic_write(inventory_path, TimingAudit.dump_jsonl(selected_records))
       TimingAudit.atomic_write(snapshot_path, TimingAudit.dump_jsonl(selected_snapshots))
@@ -88,18 +90,18 @@ module TimingFixAdjudication
         "review_manifest_sha256" => TimingAudit.sha256_file(review_manifest_path),
         "review_summary_sha256" => TimingAudit.sha256_file(File.join(@review_root, "summary-full.jsonl")),
         "manual_review_overrides_sha256" => optional_sha(File.join(@review_root, "manual-result-overrides.yaml")),
-        "selection" => { "records" => selected_records.size, "prior_verdict" => "reject" },
+        "selection" => { "records" => selected_records.size, "policy" => "non-accepting or non-high-confidence post-fix reviews" },
         "generated_source" => review_manifest.fetch("generated_source"),
         "contract" => "final static adjudication of disputed post-fix timing validity",
         "trial" => { "size" => trial_ids.size, "ids" => trial_ids },
-        "artifacts" => {
+        "artifacts" => TimingFixEvidence.bind(@output_dir, {
           "prompt_template_sha256" => TimingAudit.sha256_file(copied_template),
           "result_schema_sha256" => TimingAudit.sha256_file(copied_schema),
           "runner_sha256" => TimingAudit.sha256_file(copied_runner),
           "inventory_sha256" => TimingAudit.sha256_file(inventory_path),
           "proposal_snapshot_sha256" => TimingAudit.sha256_file(snapshot_path),
           "environment_evidence_sha256" => TimingAudit.sha256_file(environment_path)
-        }
+        })
       }
       TimingAudit.atomic_write(File.join(@output_dir, "manifest.yaml"), YAML.dump(manifest))
       puts "Prepared post-fix adjudication: #{selected_records.size} disputed records"
@@ -107,7 +109,7 @@ module TimingFixAdjudication
       trial_ids.each { |id| puts "  #{id}" }
       manifest
     rescue Exception
-      if File.directory?(@output_dir) && !File.exist?(File.join(@output_dir, "manifest.yaml"))
+      if created_output && File.directory?(@output_dir) && !File.exist?(File.join(@output_dir, "manifest.yaml"))
         FileUtils.remove_entry_secure(@output_dir)
       end
       raise
@@ -292,6 +294,7 @@ module TimingFixAdjudication
     end
 
     def verify_hashes!
+      TimingFixEvidence.verify_artifact!(@output_dir, @manifest)
       artifacts = @manifest.fetch("artifacts")
       {
         "prompt_template_sha256" => "prompt-template.txt",
@@ -312,7 +315,9 @@ module TimingFixAdjudication
 
     def valid_existing?(id)
       return false unless File.file?(result_path(id))
-      @validator.validate!(JSON.parse(File.read(result_path(id))), expected_id: id)
+      result = JSON.parse(File.read(result_path(id)))
+      @validator.validate!(result, expected_id: id)
+      TimingFixEvidence.verify_response!(@output_dir, id, result, @records_by_id.fetch(id))
     rescue StandardError => error
       warn "Ignoring invalid existing adjudication #{id}: #{error.message}"
       false
@@ -340,8 +345,9 @@ module TimingFixAdjudication
       record = @records_by_id.fetch(id)
       prompt = build_prompt(record)
       last_error = nil
+      first_attempt = TimingFixEvidence.next_attempt(@output_dir, id)
       @retries.times do |offset|
-        attempt = offset + 1
+        attempt = first_attempt + offset
         begin
           run_attempt(record, prompt, attempt, worker)
           @mutex.synchronize { @completed += 1; puts "[#{worker}] complete #{id} (#{@completed} new)" }
@@ -399,13 +405,19 @@ module TimingFixAdjudication
           "corrected_source_digest" => record.fetch("corrected_source_digest"),
           "source_or_program_executed" => false
         }
+        metadata.merge!(TimingFixEvidence.stream_metadata(stdout_path, stderr_path))
         TimingAudit.atomic_write(File.join(attempt_dir, "metadata.yaml"), YAML.dump(metadata))
         raise "Codex timed out" if timed_out
         raise "Codex exited #{status&.exitstatus || 'without status'}" unless status&.success?
         raise "Missing last message" unless File.file?(last_message)
+        TimingAudit.verify_static_events!(stdout_path)
         result = JSON.parse(File.read(last_message))
         @validator.validate!(result, expected_id: id)
-        TimingAudit.atomic_write(result_path(id), JSON.pretty_generate(result) + "\n")
+        serialized = JSON.pretty_generate(result) + "\n"
+        metadata["result_sha256"] = TimingAudit.sha256_bytes(serialized)
+        metadata["static_only_verified"] = true
+        TimingAudit.atomic_write(File.join(attempt_dir, "metadata.yaml"), YAML.dump(metadata))
+        TimingAudit.atomic_write(result_path(id), serialized)
       end
     end
 
@@ -434,6 +446,7 @@ module TimingFixAdjudication
       @output_dir = File.realpath(output_dir)
       @scope = scope
       @records = TimingAudit.load_jsonl(File.join(@output_dir, "inventory.jsonl"))
+      @records_by_id = @records.to_h { |record| [record.fetch("id"), record] }
       @validator = ResultValidator.new(@records)
     end
 
@@ -442,7 +455,10 @@ module TimingFixAdjudication
       results = ids.map do |id|
         path = File.join(@output_dir, "results", "#{id}.json")
         raise "Missing adjudication #{id}" unless File.file?(path)
-        result = JSON.parse(File.read(path)); @validator.validate!(result, expected_id: id); result
+        result = JSON.parse(File.read(path))
+        @validator.validate!(result, expected_id: id)
+        TimingFixEvidence.verify_response!(@output_dir, id, result, @records_by_id.fetch(id))
+        result
       end
       summary = results.map do |result|
         {

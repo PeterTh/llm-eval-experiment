@@ -49,6 +49,9 @@ MODELS = {"claude-sonnet-4.5":1,
           "gpt-5.6-sol-xhigh":0,
           "gpt-5.6-sol-medium":0,
           "gpt-5.6-sol-low":0,
+          "gpt-6-sol-medium":0,
+          "gpt-6-luna-medium":0,
+          "gpt-6-astra-medium":0,
           "claude-fable-5-cc-medium":0,
           "claude-opus-5-cc-medium":0,
           "claude-sonnet-5-cc-medium":0,
@@ -67,6 +70,9 @@ MODEL_MAPPING = {
     "gpt-5.6-sol-xhigh" => "gpt-5.6-sol",
     "gpt-5.6-sol-medium" => "gpt-5.6-sol",
     "gpt-5.6-sol-low" => "gpt-5.6-sol",
+    "gpt-6-sol-medium" => "gpt-6-sol",
+    "gpt-6-luna-medium" => "gpt-6-luna",
+    "gpt-6-astra-medium" => "gpt-6-astra",
     "claude-fable-5-cc-medium" => "claude-fable-5",
     "claude-opus-5-cc-medium" => "claude-opus-5",
     "claude-sonnet-5-cc-medium" => "claude-sonnet-5",
@@ -82,6 +88,9 @@ REASONING_MAPPING = {
     "gpt-5.6-sol-xhigh" => "xhigh",
     "gpt-5.6-sol-medium" => "medium",
     "gpt-5.6-sol-low" => "low",
+    "gpt-6-sol-medium" => "medium",
+    "gpt-6-luna-medium" => "medium",
+    "gpt-6-astra-medium" => "medium",
     "claude-fable-5-cc-medium" => "medium",
     "claude-opus-5-cc-medium" => "medium",
     "claude-sonnet-5-cc-medium" => "medium",
@@ -193,14 +202,14 @@ puts "Running in #{SMOKE ? "smoke test" : (TESTING ? "testing" : "production")} 
 
 #HARNESS = :copilot
 #HARNESS = :pi
-#HARNESS = :codex
-HARNESS = :claude
+HARNESS = :codex
+#HARNESS = :claude
 
 if SMOKE
     # Enough to verify a harness end to end (agent edits the sources, transcript is well formed,
     # state reset and usage preflight behave) without spending a campaign's worth of quota.
     BENCHMARKS_TO_EVAL = ["black-scholes"]
-    MODELS_TO_EVAL = ["claude-fable-5-cc-medium", "claude-opus-5-cc-medium", "claude-sonnet-5-cc-medium"]
+    MODELS_TO_EVAL = ["gpt-6-sol-medium", "gpt-6-luna-medium", "gpt-6-astra-medium"]
     PAR_TYPES_TO_EVAL = [PAR_OMP]
     NUM_RUNS = 1
 elsif TESTING
@@ -214,7 +223,7 @@ else
     #MODELS_TO_EVAL = ["gpt-5.6-luna-xhigh", "gpt-5.6-luna-medium", "gpt-5.6-luna-low",
     #                  "gpt-5.6-terra-xhigh", "gpt-5.6-terra-medium", "gpt-5.6-terra-low",
     #                  "gpt-5.6-sol-xhigh", "gpt-5.6-sol-medium", "gpt-5.6-sol-low"]
-    MODELS_TO_EVAL = ["claude-fable-5-cc-medium", "claude-opus-5-cc-medium", "claude-sonnet-5-cc-medium"]
+    MODELS_TO_EVAL = ["gpt-6-sol-medium", "gpt-6-luna-medium", "gpt-6-astra-medium"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 end

@@ -9,6 +9,7 @@ require_relative "../lib/timing_audit"
 # and source-correction authorization remain in the existing local pipeline.
 module BenchmarkValidationBatch
   STAGES = %w[basic_para validation_build validation_run internal_validation output_comparison].freeze
+  FAILURE_CLASSIFICATIONS = %w[pre_existing_correctness_failure pre_existing_output_contract_failure].freeze
   module_function
 
   def load_results(run_dir)
@@ -20,7 +21,7 @@ module BenchmarkValidationBatch
   end
 
   # Timing-only acceptance is not numerical acceptance. A confirmed pre-existing
-  # correctness defect may supersede an earlier passing observation, but never
+  # correctness or output-contract defect may supersede an earlier pass, but never
   # silently: require an explicit disposition for exactly the failed reruns.
   # Raw original and corrected validation evidence remains untouched.
   def approved_failures(path, corrected_manifest:, corrected_results:, original_commit:, corrected_commit:)
@@ -44,7 +45,7 @@ module BenchmarkValidationBatch
       result = failed.fetch(id)
       stages = STAGES.to_h { |stage| [stage, result.public_send(stage) == true] }
       unless entry.fetch("decision") == "fail_validation" &&
-             entry.fetch("classification") == "pre_existing_correctness_failure" &&
+             FAILURE_CLASSIFICATIONS.include?(entry.fetch("classification")) &&
              entry.fetch("failed_stage") == STAGES.find { |stage| !stages.fetch(stage) } &&
              !entry.fetch("reason").strip.empty? &&
              entry.dig("authorization", "source") == "user" &&
@@ -356,7 +357,7 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--corrected-validation=PATH") { |v| options[:corrected_validation] = File.expand_path(v) }
     opts.on("--original-backup=PATH") { |v| options[:original_backup] = File.expand_path(v) }
     opts.on("--canary-model=MODEL") { |v| options[:canary_model] = v }
-    opts.on("--validation-failures=PATH", "Explicit user-approved dispositions for pre-existing correctness failures") { |v| options[:validation_failures] = File.expand_path(v) }
+    opts.on("--validation-failures=PATH", "Explicit user-approved correctness/output-contract failure dispositions") { |v| options[:validation_failures] = File.expand_path(v) }
   end.parse!
   required = command == "prepare" ? %i[run_dir baseline_config corrections corrected_validation original_backup canary_model] : %i[run_dir]
   abort "Usage: benchmark_validation_batch.rb prepare|run|status --run-dir=PATH [preparation options]" unless

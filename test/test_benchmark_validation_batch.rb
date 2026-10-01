@@ -112,6 +112,22 @@ class BenchmarkValidationBatchTest < Minitest::Test
     end
   end
 
+  def test_output_contract_failure_is_distinct_and_still_requires_explicit_resolution
+    with_failure_evidence do |_root, path, data, options|
+      entry = data.fetch("records").first
+      entry["classification"] = "pre_existing_output_contract_failure"
+      entry["reason"] = "Uncoordinated MPI output breaks the required result format; no numerical error established"
+      entry.fetch("authorization")["statement"] = "Retain the output-contract validation failure without parser or source changes"
+      File.write(path, JSON.generate(data))
+      failures = BenchmarkValidationBatch.approved_failures(path, **options)
+      assert_equal "pre_existing_output_contract_failure", failures.values.first.fetch("classification")
+      refute BenchmarkValidationBatch.fully_valid?(options.fetch(:corrected_results).last)
+      entry["classification"] = "ignore_output_and_assume_valid"
+      File.write(path, JSON.generate(data))
+      assert_raises(RuntimeError) { BenchmarkValidationBatch.approved_failures(path, **options) }
+    end
+  end
+
   def test_unchanged_or_originally_invalid_programs_cannot_enter_exclusion_partition
     assert_raises(RuntimeError) { BenchmarkValidationBatch.eligible_partition(%w[a b], %w[a], %w[b]) }
     assert_raises(RuntimeError) { BenchmarkValidationBatch.eligible_partition(%w[a], %w[a b], %w[b]) }

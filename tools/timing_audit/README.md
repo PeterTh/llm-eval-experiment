@@ -126,6 +126,15 @@ Stage final corrections as one generated-source commit and preserve the original
 commit. `bin/timing_fix_finalize.rb` emits the existing correction-registry schema,
 including `timing_fixed`, source hashes and original/corrected GitHub URLs.
 
+To reconcile a later focused audit before making that single correction commit,
+`timing_fix.rb prepare --audit=BASE --overlay=FOCUSED --source-root=CLEAN_CHECKOUT`
+accepts later decisions only at the same pinned Git commit and with identical source
+digests/tree IDs for overlapping programs. A later valid decision removes an earlier
+correction candidate; a later invalid decision supplies the operative findings.
+All parent decision/manifest hashes and the review evidence origins are retained.
+The optional clean checkout must contain the combined reviewed source set; use local
+scratch, not a mutable user worktree. This does not rerun or overwrite earlier audits.
+
 `bin/export_timing_corrections.rb --batch-dir=PATH --proposals=PATH --review=PATH
 --adjudication=PATH --final=PATH --validation-run=PATH --original-source=PATH`
 exports the accepted registry, compact review/compile evidence and affected-program

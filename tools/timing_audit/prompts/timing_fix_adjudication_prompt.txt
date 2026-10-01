@@ -14,10 +14,18 @@ Canonical timing label: %{metric_label}
 
 ADJUDICATION CONTRACT
 
-Accept only when the corrected source reports the maximum completed per-rank duration
-or a demonstrably equivalent global makespan, encloses complete intended computation
-and asynchronous device work, uses compatible collectives/datatypes/communicators,
-and changes timing/reporting only.
+For MPI/hybrid, accept only when the corrected source reports the maximum completed
+per-rank duration or a demonstrably equivalent global makespan. For OpenMP/CUDA without
+MPI, require completed computation across the process's threads/devices, not an MPI
+collective. In every backend, enclose complete intended computation and asynchronous
+device work, use compatible collectives/datatypes/communicators where applicable,
+and change timing/reporting only.
+
+For QT-clustering, algorithmic preprocessing used by clustering (distances, squared
+distances, neighbor/candidate tables, spatial indexes and cached clusters) belongs
+inside timing, even if in setup or a constructor. The sequential reference computes
+distances inside its timed call. Input generation, allocation and layout-only input
+copies may remain outside. Verify this independently of rank aggregation.
 
 Apply these rules exactly:
 

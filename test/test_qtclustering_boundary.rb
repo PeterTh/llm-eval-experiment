@@ -140,6 +140,36 @@ class QtclusteringBoundaryTest < Minitest::Test
     end
   end
 
+  def test_correction_overlay_supersedes_same_source_decisions_and_adds_new_cases
+    fixture do |args, _|
+      main = args.fetch(:output_dir)
+      capture_io { QtclusteringBoundary::Builder.new(**args).run }
+      rows = TimingAudit.load_jsonl(File.join(main, "inventory.jsonl"))
+      overlay = "#{main}-overlay"
+      TimingAudit.derive_inventory(parent_root: main, output_dir: overlay,
+        ids: rows.map { |r| r.fetch("id") }, provenance: {})
+      write_resolved_audit(main, rows.first(2), [rows.first.fetch("id")])
+      write_resolved_audit(overlay, rows, [rows.last.fetch("id")])
+      proposals = "#{main}-combined"
+      capture_io do
+        TimingFix::InventoryBuilder.new(audit_root: main, overlay_roots: [overlay],
+          source_root: args[:source_root], output_dir: proposals).run
+      end
+      selected = TimingAudit.load_jsonl(File.join(proposals, "inventory.jsonl"))
+      assert_equal [rows.last.fetch("id")], selected.map { |r| r.fetch("id") }
+      manifest = YAML.safe_load_file(File.join(proposals, "manifest.yaml"))
+      assert_equal [2, 4], manifest.fetch("audit_sources").map { |r| r.fetch("records") }
+      assert_equal args[:source_root], manifest.dig("generated_source", "root")
+      rows.first["source_digest"] = "0" * 64
+      write_resolved_audit(overlay, rows, [rows.last.fetch("id")])
+      error = assert_raises(RuntimeError) do
+        TimingFix::InventoryBuilder.new(audit_root: main, overlay_roots: [overlay], output_dir: "#{main}-bad").run
+      end
+      assert_match(/overlay source mismatch/, error.message)
+      refute File.exist?("#{main}-bad")
+    end
+  end
+
   private
 
   def write(path, content)
@@ -158,7 +188,7 @@ class QtclusteringBoundaryTest < Minitest::Test
       "timed_region" => "Complete work", "start_synchronization" => "Joined", "stop_synchronization" => "Joined",
       "rank_aggregation" => "Not applicable", "reported_value" => "elapsed", "semantic_equivalence_basis" => "",
       "evidence" => [{ "path" => "qtclustering/qtclustering.cpp", "lines" => "1", "finding" => "Fixture" }],
-      "timing_only_fix_possible" => false, "minimal_fix" => "", "notes" => "" }
+      "timing_only_fix_possible" => verdict == "invalid", "minimal_fix" => verdict == "invalid" ? "Enclose complete computation." : "", "notes" => "" }
     bytes = JSON.pretty_generate(result) + "\n"
     write(File.join(root, "results", "#{id}.json"), bytes)
     attempt = File.join(root, "logs", id, "attempt-01")
@@ -169,6 +199,26 @@ class QtclusteringBoundaryTest < Minitest::Test
       "result_sha256" => TimingAudit.sha256_bytes(bytes), "events_sha256" => TimingAudit.sha256_bytes(events),
       "static_only_verified" => true, "model" => model, "reasoning_effort" => model == QtclusteringBoundary::PRIMARY_MODEL ? "high" : "xhigh" }
     write(File.join(attempt, "metadata.yaml"), YAML.dump(metadata))
+  end
+
+  def write_resolved_audit(root, rows, invalid_ids)
+    write(File.join(root, "inventory.jsonl"), TimingAudit.dump_jsonl(rows))
+    manifest_path = File.join(root, "manifest.yaml")
+    manifest = YAML.safe_load_file(manifest_path)
+    manifest["selection"]["records"] = rows.size
+    manifest["artifacts"]["inventory_sha256"] = TimingAudit.sha256_file(File.join(root, "inventory.jsonl"))
+    write(manifest_path, YAML.dump(manifest))
+    decisions = rows.map do |row|
+      id = row.fetch("id")
+      verdict = invalid_ids.include?(id) ? "invalid" : "valid"
+      fake_result(root, row, QtclusteringBoundary::PRIMARY_MODEL, verdict: verdict)
+      { "program_id" => id, "source_digest" => row.fetch("source_digest"),
+        "final_verdict" => verdict, "final_issue_categories" => verdict == "valid" ? ["none"] : ["other"] }
+    end
+    write(File.join(root, "final/decisions.jsonl"), TimingAudit.dump_jsonl(decisions))
+    write(File.join(root, "final/correction-ids.txt"), invalid_ids.sort.join("\n") + "\n")
+    write(File.join(root, "final/metadata.yaml"), YAML.dump("roots" => {
+      "primary" => root, "priority_review" => nil, "adjudication" => nil }))
   end
 
   def fixture

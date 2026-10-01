@@ -7,10 +7,12 @@ require_relative "../lib/timing_fix"
 command = ARGV.shift
 case command
 when "prepare"
-  options = { audit_root: nil, output_dir: nil, trial_size: TimingFix::DEFAULT_TRIAL_SIZE }
+  options = { audit_root: nil, output_dir: nil, trial_size: TimingFix::DEFAULT_TRIAL_SIZE, overlay_roots: [] }
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: ruby tools/timing_audit/bin/timing_fix.rb prepare --audit=PATH --output=PATH [options]"
     opts.on("--audit=PATH") { |value| options[:audit_root] = value }
+    opts.on("--overlay=PATH", "Later same-source audit decisions (repeatable)") { |value| options[:overlay_roots] << value }
+    opts.on("--source-root=PATH", "Clean combined checkout at the common pinned commit") { |value| options[:source_root] = value }
     opts.on("--output=PATH") { |value| options[:output_dir] = File.expand_path(value) }
     opts.on("--trial-size=N", Integer) { |value| options[:trial_size] = value }
     opts.on("--context=PATH") { |value| options[:context_path] = File.expand_path(value) }

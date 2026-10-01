@@ -15,8 +15,10 @@ REVIEW CONTRACT
 
 Accept the correction only when the corrected source proves all of the following:
 
-1. The canonical reported time is the maximum completed per-rank duration, or a
-   demonstrably equivalent global makespan.
+1. For MPI/hybrid, the canonical reported time is the maximum completed per-rank
+   duration, or a demonstrably equivalent global makespan. For OpenMP/CUDA without
+   MPI, it encloses the intended computation across the process's threads/devices;
+   no MPI collective is required.
 2. Each local duration encloses the complete intended computation on that rank.
    Asynchronous GPU work must be completed before the local stop. MPI collectives,
    communicators, roots, operations, counts, and datatypes used by the timing fix must
@@ -30,7 +32,14 @@ Accept the correction only when the corrected source proves all of the following
 
 Apply these timing rules literally and consistently:
 
-- Correctly reducing complete per-rank elapsed durations with MPI_MAX does not also
+- For QT-clustering, include algorithmic preprocessing used by clustering: distances
+  (including squared distances), neighbor/candidate tables, spatial indexes and cached
+  clusters. Such work replaces work inside the sequential reference's timer even if
+  called setup or a constructor. Input generation, allocation and layout-only input
+  copies may remain outside. Explicitly verify the fix did not leave preprocessing
+  excluded while merely repairing rank aggregation.
+
+- For MPI/hybrid, correctly reducing complete per-rank elapsed durations with MPI_MAX does not also
   require a simultaneous start.
 - `MPI_Barrier; local start; work; MPI_Barrier; local stop; root prints its own
   duration` is not equivalent to a maximum because barrier exits are not simultaneous.

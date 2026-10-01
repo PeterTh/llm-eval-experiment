@@ -42,8 +42,11 @@ module TimingFix
   ].freeze
 
   class InventoryBuilder
-    def initialize(audit_root:, output_dir:, trial_size: DEFAULT_TRIAL_SIZE, context_path: nil)
+    def initialize(audit_root:, output_dir:, trial_size: DEFAULT_TRIAL_SIZE, context_path: nil,
+                   overlay_roots: [], source_root: nil)
       @audit_root = File.realpath(audit_root)
+      @overlay_roots = overlay_roots.map { |root| File.realpath(root) }
+      @source_root = source_root && File.realpath(source_root)
       @output_dir = File.expand_path(output_dir)
       @trial_size = Integer(trial_size)
       @context_path = context_path
@@ -56,27 +59,24 @@ module TimingFix
       created_output = true
 
       audit_manifest = YAML.safe_load(File.read(File.join(@audit_root, "manifest.yaml")), aliases: false)
-      final_metadata = YAML.safe_load(File.read(File.join(@audit_root, "final", "metadata.yaml")), aliases: false)
-      generated = audit_manifest.fetch("generated_source")
+      generated = audit_manifest.fetch("generated_source").dup
+      generated["root"] = @source_root if @source_root
       repository = TimingAudit::SourceRepository.new(root: generated.fetch("root"), commit: generated.fetch("commit"))
-      all_records = TimingAudit.load_jsonl(File.join(@audit_root, "inventory.jsonl"))
-      records_by_id = all_records.to_h { |record| [record.fetch("id"), record] }
-      decisions = TimingAudit.load_jsonl(File.join(@audit_root, "final", "decisions.jsonl"))
-                              .to_h { |decision| [decision.fetch("program_id"), decision] }
-      correction_ids = File.readlines(File.join(@audit_root, "final", "correction-ids.txt"), chomp: true)
-                           .reject(&:empty?)
-      raise "Correction IDs must be unique" unless correction_ids.uniq == correction_ids
-      roots = final_metadata.fetch("roots")
+      records_by_id, decisions, decision_roots, audit_sources = resolved_audits(generated.fetch("commit"))
+      correction_ids = decisions.select { |_id, decision| decision.fetch("final_verdict") == "invalid" }.keys.sort
 
       records = correction_ids.map do |id|
         record = Marshal.load(Marshal.dump(records_by_id.fetch(id)))
         decision = decisions.fetch(id)
         raise "Correction ID #{id} is not invalid" unless decision.fetch("final_verdict") == "invalid"
+        repository.dossier(record) # The optional combined checkout must contain the exact reviewed source.
+        roots = decision_roots.fetch(id)
         record["final_decision"] = decision
         record["review_findings"] = {
           "primary" => load_result(roots.fetch("primary"), id),
           "priority" => load_optional_result(roots.fetch("priority_review"), id),
-          "adjudication" => load_optional_result(roots.fetch("adjudication"), id)
+          "adjudication" => load_optional_result(roots.fetch("adjudication"), id),
+          "supplemental" => load_optional_result(roots["supplemental_adjudication"], id)
         }.compact
         record
       end
@@ -100,6 +100,8 @@ module TimingFix
         "audit_root" => @audit_root,
         "audit_final_metadata_sha256" => TimingAudit.sha256_file(File.join(@audit_root, "final", "metadata.yaml")),
         "audit_decisions_sha256" => TimingAudit.sha256_file(File.join(@audit_root, "final", "decisions.jsonl")),
+        "audit_sources" => audit_sources,
+        "audit_overlay_policy" => "Later same-source audit decisions supersede earlier decisions; all parent evidence is retained",
         "selection" => { "records" => records.size, "final_verdict" => "invalid" },
         "generated_source" => generated,
         "contract" => "fix only canonical timing measurement; preserve all non-timing behavior",
@@ -123,6 +125,46 @@ module TimingFix
     end
 
     private
+
+    def resolved_audits(commit)
+      records, decisions, roots_by_id = {}, {}, {}
+      sources = ([@audit_root] + @overlay_roots).map do |root|
+        manifest_path = File.join(root, "manifest.yaml")
+        metadata_path = File.join(root, "final/metadata.yaml")
+        decisions_path = File.join(root, "final/decisions.jsonl")
+        manifest = YAML.safe_load_file(manifest_path, aliases: false)
+        metadata = YAML.safe_load_file(metadata_path, aliases: false)
+        raise "Audit overlay source commit mismatch" unless manifest.dig("generated_source", "commit") == commit
+        inventory_path = File.join(root, "inventory.jsonl")
+        expected_inventory = manifest.dig("artifacts", "inventory_sha256")
+        raise "Audit inventory changed" if expected_inventory && expected_inventory != TimingAudit.sha256_file(inventory_path)
+        expected_decisions = metadata["decisions_sha256"]
+        raise "Audit decisions changed" if expected_decisions && expected_decisions != TimingAudit.sha256_file(decisions_path)
+        inventory = TimingAudit.load_jsonl(inventory_path)
+        resolved = TimingAudit.load_jsonl(decisions_path)
+        by_id = inventory.to_h { |r| [r.fetch("id"), r] }
+        by_decision_id = resolved.to_h { |r| [r.fetch("program_id"), r] }
+        raise "Audit decision coverage mismatch" unless by_id.size == inventory.size &&
+          by_decision_id.size == resolved.size && by_id.keys.sort == by_decision_id.keys.sort
+        correction_ids = File.readlines(File.join(root, "final/correction-ids.txt"), chomp: true).reject(&:empty?)
+        invalid_ids = resolved.select { |r| r.fetch("final_verdict") == "invalid" }.map { |r| r.fetch("program_id") }.sort
+        raise "Audit correction selection mismatch" unless correction_ids.uniq == correction_ids && correction_ids.sort == invalid_ids
+        inventory.each do |record|
+          id = record.fetch("id")
+          decision = by_decision_id.fetch(id)
+          raise "Decision source mismatch for #{id}" unless decision.fetch("source_digest") == record.fetch("source_digest")
+          if records.key?(id) && (records[id].fetch("source_digest") != record.fetch("source_digest") ||
+              records[id].fetch("source_tree_oid") != record.fetch("source_tree_oid"))
+            raise "Audit overlay source mismatch for #{id}"
+          end
+          records[id], decisions[id], roots_by_id[id] = record, decision, metadata.fetch("roots")
+        end
+        { "root" => root, "manifest_sha256" => TimingAudit.sha256_file(manifest_path),
+          "final_metadata_sha256" => TimingAudit.sha256_file(metadata_path),
+          "decisions_sha256" => TimingAudit.sha256_file(decisions_path), "records" => inventory.size }
+      end
+      [records, decisions, roots_by_id, sources]
+    end
 
     def load_result(root, id)
       JSON.parse(File.read(File.join(root, "results", "#{id}.json")))

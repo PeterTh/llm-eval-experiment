@@ -73,6 +73,34 @@ overwriting earlier evidence.
 The worker CLI explicitly disables shell execution, web search, hooks, and external
 integrations in addition to the read-only sandbox and source-only instructions.
 
+## QT-clustering measurement-boundary review
+
+`bin/qtclustering_boundary.rb prepare` prepares a separate, all-backend audit of
+every validation-passing QT-clustering implementation in `release/catalog.json`
+and additional completed `--validation-run` directories. Benchmark success and
+performance do not filter this review. It verifies the selected current source
+trees against each evaluated original/corrected Git revision. Use a clean sparse
+checkout on `/tmp`; persistent evidence belongs under home.
+
+The frozen prompt includes the pinned sequential reference, inherited sizes,
+and platform evidence. Input generation and allocation may remain outside timing;
+input-dependent algorithmic preprocessing (distances, neighbors, candidate caches,
+spatial indexes) must be included. The same contract applies to OpenMP, CUDA,
+MPI and hybrid. Review workers cannot compile or execute code.
+
+Run the ordinary audit runner with Luna/high and `--scope=trial --jobs=4`, then
+`qtclustering_boundary.rb review --main=PATH --review=PATH --scope=trial --jobs=4`
+for a blind Sol-6.1/xhigh check of the same pilot. `pilot-gate --main=PATH
+--review=PATH` retains the quality check; inspect any failed gate before expanding.
+Run the primary full inventory with 16 workers after the gate passes. The `review`
+command with `--scope=full` selects every flagged or uncertain result and MPI
+makespan controls, reusing the pilot adjudications. Prior verdicts are not sent
+to Sol. `finalize --main=PATH --review=PATH` verifies source-only evidence, reviewer
+identity and immutable artifacts and retains unresolved uncertainty explicitly.
+Only difficult unresolved cases require Astra/human review. Earlier audit campaigns
+are not overwritten; the new decisions must be reconciled before timing-only
+corrections and affected-ID remeasurement. No blanket benchmark rerun is implied.
+
 `bin/export_validation_audit.rb --run-dir=PATH --output=PATH` exports compact
 validation-only evidence to a new supplementary batch directory in the artifact
 repository, without replacing the canonical release. After auditing, add

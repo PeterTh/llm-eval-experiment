@@ -129,6 +129,7 @@ module TimingFix
     end
 
     def load_optional_result(root, id)
+      return nil unless root
       path = File.join(root, "results", "#{id}.json")
       File.file?(path) ? JSON.parse(File.read(path)) : nil
     end

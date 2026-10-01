@@ -2,6 +2,7 @@
 
 require "minitest/autorun"
 require_relative "../tools/timing_audit/lib/qtclustering_boundary"
+require_relative "../tools/timing_audit/lib/timing_fix"
 
 class QtclusteringBoundaryTest < Minitest::Test
   def test_selection_includes_all_backends_and_benchmark_failures
@@ -90,6 +91,7 @@ class QtclusteringBoundaryTest < Minitest::Test
       assert passed
       uncertain = records.first
       fake_result(review, uncertain, QtclusteringBoundary::ADJUDICATION_MODEL, verdict: "ambiguous")
+      fake_result(review, records.last, QtclusteringBoundary::ADJUDICATION_MODEL, verdict: "invalid")
       capture_io { passed = QtclusteringBoundary.pilot_gate(main_root: main, review_root: review) }
       refute passed
       selection = QtclusteringBoundary.review_selection(main)
@@ -102,6 +104,11 @@ class QtclusteringBoundaryTest < Minitest::Test
       assert_nil row.fetch("timing_fix_required")
       assert row.fetch("timing_review_required")
       assert_equal uncertain.fetch("id"), File.read(File.join(main, "final/review-ids.txt")).strip
+      proposals = "#{main}-proposals"
+      capture_io { TimingFix::InventoryBuilder.new(audit_root: main, output_dir: proposals).run }
+      fixes = TimingAudit.load_jsonl(File.join(proposals, "inventory.jsonl"))
+      assert_equal [records.last.fetch("id")], fixes.map { |r| r.fetch("id") }
+      assert_equal %w[adjudication primary], fixes.first.fetch("review_findings").keys.sort
       assert_raises(RuntimeError) { QtclusteringBoundary.finalize(main_root: main, review_root: review) }
     end
   end

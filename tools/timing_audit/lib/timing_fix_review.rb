@@ -103,9 +103,11 @@ module TimingFixReview
   end
 
   class InventoryBuilder
-    def initialize(proposal_root:, output_dir:)
+    def initialize(proposal_root:, output_dir:, scope: "full")
       @proposal_root = File.realpath(proposal_root)
       @output_dir = File.expand_path(output_dir)
+      @scope = scope.to_s
+      raise "Scope must be trial or full" unless %w[trial full].include?(@scope)
     end
 
     def run
@@ -118,8 +120,14 @@ module TimingFixReview
       generated = proposal_manifest.fetch("generated_source")
       TimingAudit::SourceRepository.new(root: generated.fetch("root"), commit: generated.fetch("commit"))
       records = TimingAudit.load_jsonl(File.join(@proposal_root, "inventory.jsonl"))
+      trial_ids = File.readlines(File.join(@proposal_root, "trial-ids.txt"), chomp: true).reject(&:empty?)
+      raise "Duplicate trial IDs" unless trial_ids.uniq == trial_ids
+      unknown_trial_ids = trial_ids - records.map { |record| record.fetch("id") }
+      raise "Unknown trial IDs: #{unknown_trial_ids.join(', ')}" unless unknown_trial_ids.empty?
+      records = records.select { |record| trial_ids.include?(record.fetch("id")) } if @scope == "trial"
+      raise "Empty post-fix review selection" if records.empty?
       validator = TimingFix::ProposalValidator.new(records, generated.fetch("root"))
-      materialized_path = File.join(@proposal_root, "materialized", "summary-full.yaml")
+      materialized_path = File.join(@proposal_root, "materialized", "summary-#{@scope}.yaml")
       materialized = YAML.safe_load(File.read(materialized_path), aliases: false)
       validate_materialized!(materialized, records.size)
 
@@ -151,10 +159,6 @@ module TimingFixReview
         enriched
       end
 
-      trial_ids = File.readlines(File.join(@proposal_root, "trial-ids.txt"), chomp: true).reject(&:empty?)
-      unknown_trial_ids = trial_ids - review_records.map { |record| record.fetch("id") }
-      raise "Unknown trial IDs: #{unknown_trial_ids.join(', ')}" unless unknown_trial_ids.empty?
-
       template_path = File.expand_path("../prompts/timing_fix_review_prompt.txt", __dir__)
       schema_path = File.expand_path("../schemas/timing_fix_review_schema.json", __dir__)
       runner_path = File.expand_path(__FILE__)
@@ -171,16 +175,17 @@ module TimingFixReview
       TimingAudit.atomic_write(snapshots_path, TimingAudit.dump_jsonl(snapshots))
       TimingAudit.atomic_write(File.join(@output_dir, "trial-ids.txt"), trial_ids.join("\n") + "\n")
 
-      patch_path = File.join(@proposal_root, "materialized", "timing-fixes-full.patch")
-      raise "Missing materialized full patch" unless File.file?(patch_path)
+      patch_path = File.join(@proposal_root, "materialized", "timing-fixes-#{@scope}.patch")
+      raise "Missing materialized #{@scope} patch" unless File.file?(patch_path)
       raise "Materialized patch digest mismatch" unless TimingAudit.sha256_file(patch_path) == materialized.fetch("patch_sha256")
       manual_overrides_path = File.join(@proposal_root, "manual-proposal-overrides.yaml")
       manifest = {
         "schema_version" => SCHEMA_VERSION,
         "created_at" => TimingAudit.utc_now,
         "proposal_root" => @proposal_root,
+        "proposal_scope" => @scope,
         "proposal_manifest_sha256" => TimingAudit.sha256_file(proposal_manifest_path),
-        "proposal_summary_sha256" => TimingAudit.sha256_file(File.join(@proposal_root, "summary-full.jsonl")),
+        "proposal_summary_sha256" => TimingAudit.sha256_file(File.join(@proposal_root, "summary-#{@scope}.jsonl")),
         "materialized_summary_sha256" => TimingAudit.sha256_file(materialized_path),
         "materialized_patch_sha256" => materialized.fetch("patch_sha256"),
         "manual_proposal_overrides_sha256" => File.file?(manual_overrides_path) ? TimingAudit.sha256_file(manual_overrides_path) : nil,
@@ -212,7 +217,7 @@ module TimingFixReview
     private
 
     def validate_materialized!(summary, expected_records)
-      raise "Full materialization summary required" unless summary.fetch("scope") == "full"
+      raise "Matching #{@scope} materialization summary required" unless summary.fetch("scope") == @scope
       raise "Materialization record count mismatch" unless summary.fetch("records") == expected_records
       raise "Materialization changed-path count mismatch" unless summary.fetch("changed_paths") >= expected_records
       raise "Not all fixes compiled" unless summary.fetch("compiled") == expected_records &&

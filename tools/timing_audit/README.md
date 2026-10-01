@@ -116,6 +116,16 @@ to select only confirmed-invalid final decisions; null performance scores are
 supported and conditional cases are not selected. Run a proposal pilot before
 expanding, compile with `bin/timing_fix_materialize.rb` on local scratch, then
 prepare independent corrected-source review with `bin/timing_fix_review.rb`.
+Its `prepare --scope=trial` prepares only the compiled pilot, so the pilot can
+receive independent review before expanding proposals to the full set. The
+default preparation scope remains `full`; both scopes bind their own compiled
+patch and summary. CUDA-only and hybrid corrections use the same pinned CUDA
+compiler and architecture during compile checks.
+If compilation or review rejects a proposal, `bin/timing_fix_revision.rb` accepts
+a JSON array of `program_id`, `prior_proposal_sha256`, and `feedback` records. It
+revises only those proposals with a static worker, keeps the old responses and
+feedback under `revisions/`, and requires compilation and independent review of
+the new exact source. It never changes the frozen original proposal runner.
 `bin/timing_fix_adjudication.rb` selects non-accepting and uncertain reviews without
 requiring IDs from the historical release. An empty adjudication set is valid.
 

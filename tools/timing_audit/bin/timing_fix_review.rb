@@ -7,11 +7,12 @@ require_relative "../lib/timing_fix_review"
 command = ARGV.shift
 case command
 when "prepare"
-  options = { proposal_root: nil, output_dir: nil }
+  options = { proposal_root: nil, output_dir: nil, scope: "full" }
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: ruby tools/timing_audit/bin/timing_fix_review.rb prepare --proposals=PATH --output=PATH"
     opts.on("--proposals=PATH") { |value| options[:proposal_root] = value }
     opts.on("--output=PATH") { |value| options[:output_dir] = File.expand_path(value) }
+    opts.on("--scope=SCOPE", %w[trial full]) { |value| options[:scope] = value }
   end
   parser.parse!(ARGV)
   abort parser.to_s unless ARGV.empty? && options.values.all?

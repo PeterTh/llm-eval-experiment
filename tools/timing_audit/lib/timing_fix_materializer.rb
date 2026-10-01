@@ -167,7 +167,7 @@ module TimingFixMaterializer
       "-DCMAKE_C_COMPILER=#{C_COMPILER}",
       "-DCMAKE_CXX_COMPILER=#{CXX_COMPILER}"
     ]
-    if record.fetch("par_type") == "hybrid"
+    if %w[cuda hybrid].include?(record.fetch("par_type"))
       configure.concat([
         "-DCMAKE_CUDA_ARCHITECTURES=86",
         "-DCMAKE_CUDA_COMPILER=#{CUDA_COMPILER}",

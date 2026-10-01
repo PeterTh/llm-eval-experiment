@@ -3,6 +3,7 @@
 require "minitest/autorun"
 require "tmpdir"
 require_relative "../tools/timing_audit/lib/timing_fix"
+require_relative "../tools/timing_audit/lib/timing_fix_materializer"
 
 class TimingFixTest < Minitest::Test
   def with_validator
@@ -70,6 +71,28 @@ class TimingFixTest < Minitest::Test
         validator.validate!(proposal, expected_id: "example_mpi_r1")
       end
       assert_match(/occurs 2 times/, error.message)
+    end
+  end
+
+  def test_compile_target_is_explicit_for_cuda_and_hybrid_only
+    Dir.mktmpdir do |root|
+      %w[cuda hybrid mpi omp].each do |backend|
+        calls = []
+        record = { "id" => "example_#{backend}_r1", "source_prefix" => "batch/example_#{backend}_r1",
+          "benchmark" => "bench", "par_type" => backend, "source_digest" => "fixture" }
+        runner = lambda do |argv, *_args|
+          calls << argv
+          { "success" => true }
+        end
+        TimingFixMaterializer.stub(:run_command, runner) do
+          result = TimingFixMaterializer.compile_one(root, File.join(root, "logs"), "trial", record, 1)
+          assert result.fetch("success")
+          refute result.fetch("program_executed")
+        end
+        assert_equal 2, calls.size
+        assert_equal %w[cuda hybrid].include?(backend), calls.first.include?("-DCMAKE_CUDA_ARCHITECTURES=86")
+        assert_equal %w[cuda hybrid].include?(backend), calls.first.include?("-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc")
+      end
     end
   end
 end

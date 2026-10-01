@@ -78,7 +78,7 @@ module TimingFixFinalize
     manifest = {
       "schema_version" => SCHEMA_VERSION,
       "created_at" => TimingAudit.utc_now,
-      "contract" => "timing-only corrections for maximum completed per-rank duration or a semantically equivalent global makespan",
+      "contract" => "timing-only corrections measuring the completed intended computation; MPI/hybrid use maximum complete per-rank duration or an equivalent global makespan; QT-clustering includes algorithmic distance/neighbor preprocessing",
       "record_count" => corrections.size,
       "all_final_verdicts" => "accept",
       "original_source" => { "root" => source_root, "commit" => original_commit, "repository_url" => repository_url },

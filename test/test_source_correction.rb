@@ -14,6 +14,11 @@ class SourceCorrectionAmendmentTest < Minitest::Test
     @evidence = File.join(@tmp, "evidence")
     @id = "matmul_model_mpi_r1"
     @prefix = "20260101-000000/#{@id}"
+    @other_id = "matmul_external_mpi_r2"
+    @other_prefix = "20260102-000000/#{@other_id}"
+    @other_source = File.join(@source, @other_prefix, "matmul/main.cpp")
+    FileUtils.mkdir_p(File.dirname(@other_source))
+    File.write(@other_source, "double rank_time = 2.0;\n")
     source_file = File.join(@source, @prefix, "matmul", "main.cpp")
     FileUtils.mkdir_p(File.dirname(source_file))
     File.write(source_file, "double local_time = 1.0;\n")
@@ -85,7 +90,106 @@ class SourceCorrectionAmendmentTest < Minitest::Test
     assert_raises(RuntimeError) { manifest.filtered_runs(exact_id: @id, ids: [@id]) }
   end
 
+  def test_shared_commit_retains_all_records_but_authorizes_only_manifest_ids
+    add_external_correction
+    manifest = LocalEvaluation::Manifest.new(@run_dir)
+    assert_raises(RuntimeError) do
+      LocalEvaluation::SourceCorrectionAmendment.create!(manifest: manifest, correction_dir: @evidence, reason: "Shared correction")
+    end
+    amendment = LocalEvaluation::SourceCorrectionAmendment.create!(manifest: manifest,
+      correction_dir: @evidence, reason: "Shared correction", scope: "manifest")
+    assert_equal [@id], amendment.affected_ids
+    assert_equal [@id, @other_id].sort, amendment.records.keys.sort
+    assert_nil amendment.record_for(@other_id)
+    assert_equal 2, amendment.data.fetch("changed_paths_count")
+    assert amendment.verify!(manifest: manifest, operation: "benchmark", exact_id: nil, filter: nil, selected_ids: [@id])
+    assert_raises(LocalEvaluation::InfrastructureError) do
+      amendment.verify!(manifest: manifest, operation: "benchmark", exact_id: nil, filter: nil, selected_ids: [@other_id])
+    end
+  end
+
+  def test_shared_commit_rejects_unbound_source_trees_and_extra_paths
+    add_external_correction
+    manifest = LocalEvaluation::Manifest.new(@run_dir)
+    records = File.readlines(File.join(@evidence, "corrections.jsonl")).map { |line| JSON.parse(line) }
+    original = Marshal.load(Marshal.dump(records))
+    records.last["original_source"]["tree_oid"] = "wrong"
+    update_records(records)
+    error = assert_raises(RuntimeError) do
+      LocalEvaluation::SourceCorrectionAmendment.create!(manifest: manifest, correction_dir: @evidence,
+        reason: "Shared correction", scope: "manifest")
+    end
+    assert_match(/source tree differs/, error.message)
+    update_records(original)
+    File.write(File.join(@source, "unreviewed.txt"), "extra change\n")
+    git("add", "--all")
+    git("commit", "-qm", "unreviewed")
+    head = git("rev-parse", "HEAD").strip
+    original.each { |record| record["corrected_source"]["commit"] = head }
+    update_records(original)
+    evidence_path = File.join(@evidence, "manifest.yaml")
+    evidence = LocalEvaluation.load_yaml(evidence_path)
+    evidence["corrected_source"]["commit"] = head
+    LocalEvaluation.atomic_yaml(evidence_path, evidence)
+    error = assert_raises(RuntimeError) do
+      LocalEvaluation::SourceCorrectionAmendment.create!(manifest: manifest, correction_dir: @evidence,
+        reason: "Shared correction", scope: "manifest")
+    end
+    assert_match(/path set differs/, error.message)
+  end
+
+  def test_explicit_already_corrected_mode_keeps_original_source_provenance
+    data = LocalEvaluation.load_yaml(@manifest_path)
+    data["experiment_repository"] = LocalEvaluation.git_snapshot(@source)
+    LocalEvaluation.atomic_yaml_with_digest(@manifest_path, data)
+    manifest = LocalEvaluation::Manifest.new(@run_dir)
+    assert_raises(RuntimeError) do
+      LocalEvaluation::SourceCorrectionAmendment.create!(manifest: manifest,
+        correction_dir: @evidence, reason: "Corrected validation followed by scoped benchmark")
+    end
+    amendment = LocalEvaluation::SourceCorrectionAmendment.create!(manifest: manifest,
+      correction_dir: @evidence, reason: "Corrected validation followed by scoped benchmark",
+      revision_mode: "already_corrected")
+    assert_equal @original_commit, amendment.data.dig("original_experiment_repository", "commit")
+    assert_equal @corrected_commit, amendment.data.dig("manifest_experiment_repository", "commit")
+    assert amendment.verify_record_source!(@id)
+    assert amendment.verify!(manifest: manifest, operation: "benchmark", exact_id: @id, filter: nil)
+    assert_raises(LocalEvaluation::InfrastructureError) do
+      manifest.verify_non_pipeline_input_revisions!(operation: "validate")
+    end
+  end
+
   private
+
+  def add_external_correction
+    File.write(@other_source, "double global_time = 2.0;\n")
+    git("add", "--all")
+    git("commit", "-qm", "additional timing correction")
+    @corrected_commit = git("rev-parse", "HEAD").strip
+    write_evidence
+    records = File.readlines(File.join(@evidence, "corrections.jsonl")).map { |line| JSON.parse(line) }
+    extra = Marshal.load(Marshal.dump(records.first))
+    extra.merge!("program_id" => @other_id, "model" => "external", "run" => 2,
+      "source_batch" => "20260102-000000", "source_prefix" => @other_prefix,
+      "changed_paths" => ["#{@other_prefix}/matmul/main.cpp"])
+    extra["original_source"]["tree_oid"] = git("rev-parse", "#{@original_commit}:#{@other_prefix}").strip
+    extra["corrected_source"]["tree_oid"] = git("rev-parse", "#{@corrected_commit}:#{@other_prefix}").strip
+    update_records(records + [extra])
+  end
+
+  def update_records(records)
+    records_path = File.join(@evidence, "corrections.jsonl")
+    ids_path = File.join(@evidence, "correction-ids.txt")
+    LocalEvaluation.atomic_write(records_path, records.map { |r| JSON.generate(r) + "\n" }.join)
+    LocalEvaluation.atomic_write(ids_path, records.map { |r| r.fetch("program_id") }.sort.join("\n") + "\n")
+    evidence_path = File.join(@evidence, "manifest.yaml")
+    evidence = LocalEvaluation.load_yaml(evidence_path)
+    evidence["record_count"] = records.size
+    evidence["compile_validation"].merge!("records" => records.size, "compiled" => records.size, "compile_successes" => records.size)
+    evidence["artifacts"]["corrections_jsonl_sha256"] = LocalEvaluation.sha256_file(records_path)
+    evidence["artifacts"]["correction_ids_sha256"] = LocalEvaluation.sha256_file(ids_path)
+    LocalEvaluation.atomic_yaml(evidence_path, evidence)
+  end
 
   def write_evidence
     FileUtils.mkdir_p(@evidence)
@@ -104,7 +208,7 @@ class SourceCorrectionAmendmentTest < Minitest::Test
       "corrected_source_url" => "https://github.com/example/generated/tree/#{@corrected_commit}/#{@prefix}",
       "original_issue_categories" => ["rank_local_timing"],
       "changed_paths" => [changed_path],
-      "original_source" => { "commit" => @original_commit, "tree_oid" => "old", "digest" => "a" * 64 },
+      "original_source" => { "commit" => @original_commit, "tree_oid" => git("rev-parse", "#{@original_commit}:#{@prefix}").strip, "digest" => "a" * 64 },
       "corrected_source" => { "commit" => @corrected_commit, "tree_oid" => @corrected_tree, "digest" => "b" * 64 },
       "proposal" => { "sha256" => "c" * 64, "summary" => "Use MPI_MAX." },
       "postfix_review" => { "verdict" => "accept", "sha256" => "d" * 64 },

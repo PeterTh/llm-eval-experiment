@@ -203,7 +203,10 @@ module LocalEvaluation
       File.file?(path) ? new(path, manifest: manifest) : nil
     end
 
-    def self.create!(manifest:, correction_dir:, reason:, dry_run: false)
+    def self.create!(manifest:, correction_dir:, reason:, dry_run: false,
+                     scope: "exact", revision_mode: "transition")
+      raise "Unknown correction scope" unless %w[exact manifest].include?(scope)
+      raise "Unknown correction revision mode" unless %w[transition already_corrected].include?(revision_mode)
       run_dir = File.dirname(manifest.path)
       paths = artifact_paths(run_dir)
       existing = paths.values.select { |path| File.exist?(path) || File.exist?("#{path}.sha256") }
@@ -226,8 +229,9 @@ module LocalEvaluation
       validate_external_evidence!(evidence, records, ids, source_records_path, source_ids_path)
 
       recorded = manifest.data.fetch("experiment_repository")
+      pinned_kind = revision_mode == "already_corrected" ? "corrected_source" : "original_source"
       unless recorded["git"] && evidence.dig("original_source", "root") == recorded.fetch("path") &&
-             evidence.dig("original_source", "commit") == recorded.fetch("commit")
+             evidence.dig(pinned_kind, "commit") == recorded.fetch("commit")
         raise "Correction evidence does not start from the experiment revision pinned by the run manifest"
       end
       corrected = LocalEvaluation.git_snapshot(recorded.fetch("path"))
@@ -235,8 +239,13 @@ module LocalEvaluation
              corrected["commit"] == evidence.dig("corrected_source", "commit")
         raise "Experiment repository is not clean at the corrected evidence commit"
       end
-      validate_records!(records, ids, manifest, recorded.fetch("commit"), corrected.fetch("commit"))
-      changed_paths = git_changed_paths(recorded.fetch("path"), recorded.fetch("commit"), corrected.fetch("commit"))
+      original_commit = evidence.fetch("original_source").fetch("commit")
+      affected_ids = validate_scoped_records!(records, ids, manifest, original_commit,
+        corrected.fetch("commit"), scope: scope)
+      if scope == "manifest" || revision_mode == "already_corrected"
+        verify_record_trees!(records, recorded.fetch("path"), original_commit, corrected.fetch("commit"))
+      end
+      changed_paths = git_changed_paths(recorded.fetch("path"), original_commit, corrected.fetch("commit"))
       expected_paths = records.flat_map { |record| record.fetch("changed_paths") }.uniq.sort
       raise "Corrected Git commit path set differs from correction records" unless changed_paths == expected_paths
 
@@ -246,8 +255,11 @@ module LocalEvaluation
         "manifest_sha256" => LocalEvaluation.sha256_file(manifest.path),
         "reason" => reason,
         "authorized_operations" => AUTHORIZED_OPERATIONS,
-        "affected_run_ids" => ids,
-        "original_experiment_repository" => recorded,
+        "affected_run_ids" => affected_ids,
+        "correction_scope" => scope,
+        "source_revision_mode" => revision_mode,
+        "manifest_experiment_repository" => recorded,
+        "original_experiment_repository" => recorded.merge("commit" => original_commit),
         "corrected_experiment_repository" => corrected,
         "changed_paths_count" => changed_paths.size,
         "changed_paths_sha256" => Digest::SHA256.hexdigest(changed_paths.join("\n") + "\n"),
@@ -344,6 +356,42 @@ module LocalEvaluation
     end
     private_class_method :validate_records!
 
+    # A single reviewed source commit can serve more than one evaluation batch.
+    # Retain the complete registry/path proof, but authorize only IDs in this run.
+    def self.validate_scoped_records!(records, ids, manifest, original_commit, corrected_commit, scope:)
+      raise "Unknown correction scope" unless %w[exact manifest].include?(scope)
+      affected = ids & manifest.runs.keys
+      raise "No corrections belong to this run manifest" if affected.empty?
+      outside = ids - affected
+      if scope == "exact" && !outside.empty?
+        raise "Correction record is absent from the run manifest: #{outside.first}"
+      end
+      expanded = manifest.runs.dup
+      records.each do |record|
+        id = record.fetch("program_id")
+        next if expanded.key?(id)
+        batch = record.fetch("source_batch")
+        raise "Invalid external correction batch" unless batch.match?(/\A\d{8}-\d{6}\z/)
+        expanded[id] = LocalEvaluation.parse_run_id(id).merge("batch" => batch)
+      end
+      validate_records!(records, ids, Struct.new(:runs).new(expanded), original_commit, corrected_commit)
+      affected.sort
+    end
+    private_class_method :validate_scoped_records!
+
+    def self.verify_record_trees!(records, root, original_commit, corrected_commit)
+      records.each do |record|
+        %w[original corrected].zip([original_commit, corrected_commit]).each do |kind, commit|
+          prefix = record.fetch("source_prefix")
+          output, error, status = Open3.capture3("git", "-C", root, "rev-parse", "#{commit}:#{prefix}")
+          unless status.success? && output.strip == record.dig("#{kind}_source", "tree_oid")
+            raise "Correction #{kind} source tree differs for #{record.fetch('program_id')}: #{error.strip}"
+          end
+        end
+      end
+    end
+    private_class_method :verify_record_trees!
+
     def self.git_changed_paths(root, original, corrected)
       stdout, stderr, status = Open3.capture3("git", "-C", root, "diff", "--name-only", original, corrected, "--")
       raise "Could not inspect corrected Git path set: #{stderr.strip}" unless status.success?
@@ -378,8 +426,15 @@ module LocalEvaluation
       ids = File.readlines(paths.fetch(:ids), chomp: true).reject(&:empty?)
       original = @data.fetch("original_experiment_repository").fetch("commit")
       corrected = @data.fetch("corrected_experiment_repository").fetch("commit")
-      self.class.send(:validate_records!, @records.values, ids, manifest, original, corrected)
-      unless ids == @data["affected_run_ids"] && ids == @records.keys.sort
+      scope = @data.fetch("correction_scope", "exact")
+      mode = @data.fetch("source_revision_mode", "transition")
+      raise "Unknown correction revision mode" unless %w[transition already_corrected].include?(mode)
+      expected_manifest_commit = mode == "already_corrected" ? corrected : original
+      unless manifest.data.dig("experiment_repository", "commit") == expected_manifest_commit
+        raise "Correction revision mode differs from the run manifest"
+      end
+      affected = self.class.send(:validate_scoped_records!, @records.values, ids, manifest, original, corrected, scope: scope)
+      unless affected == @data["affected_run_ids"] && ids == @records.keys.sort
         raise "Source correction amendment affected-run set is inconsistent"
       end
     end
@@ -389,7 +444,7 @@ module LocalEvaluation
     end
 
     def record_for(id)
-      @records[id]
+      @records[id] if affected_ids.include?(id)
     end
 
     def verify_record_source!(id)
@@ -817,18 +872,18 @@ module LocalEvaluation
         next unless recorded && recorded["git"]
 
         current = LocalEvaluation.git_snapshot(recorded.fetch("path"))
+        if name == "experiments" && (correction = SourceCorrectionAmendment.load(File.dirname(@path), manifest: self))
+          correction.verify!(manifest: self, operation: operation, exact_id: exact_id,
+                             filter: filter, selected_ids: selected_ids)
+          report["source_correction_amendment_sha256"] = correction.digest
+          report["source_correction_affected_run_ids"] = correction.affected_ids
+          report[name] = {
+            "path" => current.fetch("path"), "commit" => current.fetch("commit"), "clean" => true,
+            "original_commit" => correction.data.dig("original_experiment_repository", "commit"), "timing_correction" => true
+          }
+          next
+        end
         unless current["git"] && current["commit"] == recorded["commit"] && !current["dirty"]
-          if name == "experiments" && (correction = SourceCorrectionAmendment.load(File.dirname(@path), manifest: self))
-            correction.verify!(manifest: self, operation: operation, exact_id: exact_id,
-                               filter: filter, selected_ids: selected_ids)
-            report["source_correction_amendment_sha256"] = correction.digest
-            report["source_correction_affected_run_ids"] = correction.affected_ids
-            report[name] = {
-              "path" => current.fetch("path"), "commit" => current.fetch("commit"), "clean" => true,
-              "original_commit" => recorded.fetch("commit"), "timing_correction" => true
-            }
-            next
-          end
           raise InfrastructureError,
                 "#{name.capitalize} repository changed since manifest creation: #{recorded.fetch('path')}"
         end

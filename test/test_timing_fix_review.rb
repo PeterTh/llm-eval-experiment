@@ -2,6 +2,7 @@
 
 require "minitest/autorun"
 require_relative "../tools/timing_audit/lib/timing_fix_review"
+require_relative "../tools/timing_audit/bin/timing_fix_review_reuse"
 
 class TimingFixReviewValidatorTest < Minitest::Test
   def setup
@@ -59,6 +60,56 @@ class TimingFixReviewValidatorTest < Minitest::Test
 end
 
 class TimingFixReviewInventoryTest < Minitest::Test
+  def test_reuses_only_literal_matching_static_pilot_evidence
+    with_proposals("full") do |root, proposals, ids|
+      summary = YAML.safe_load_file(File.join(proposals, "materialized/summary-full.yaml"))
+      summary.merge!("scope" => "trial", "records" => 1, "compiled" => 1, "compile_successes" => 1)
+      File.write(File.join(proposals, "materialized/summary-trial.yaml"), YAML.dump(summary))
+      FileUtils.cp(File.join(proposals, "materialized/timing-fixes-full.patch"), File.join(proposals, "materialized/timing-fixes-trial.patch"))
+      FileUtils.cp(File.join(proposals, "summary-full.jsonl"), File.join(proposals, "summary-trial.jsonl"))
+      pilot = File.join(root, "pilot")
+      full = File.join(root, "full")
+      capture_io do
+        TimingFixReview::InventoryBuilder.new(proposal_root: proposals, output_dir: pilot, scope: "trial").run
+        TimingFixReview::InventoryBuilder.new(proposal_root: proposals, output_dir: full).run
+      end
+      id = ids.first
+      record = TimingAudit.load_jsonl(File.join(pilot, "inventory.jsonl")).first
+      result = { "program_id" => id, "verdict" => "accept", "issue_categories" => ["none"], "confidence" => "high",
+        "timing_contract_satisfied" => true, "timing_only_scope_satisfied" => true, "device_completion" => "not_applicable",
+        "timed_region" => "Complete", "rank_aggregation" => "Maximum", "collective_safety" => "Safe",
+        "canonical_output" => "elapsed", "scope_assessment" => "Timing only", "minimal_correction" => "", "notes" => "",
+        "evidence" => [{ "path" => "bench/main.cpp", "lines" => "1", "finding" => "Fixture" }] }
+      bytes = JSON.pretty_generate(result) + "\n"
+      events = TimingAudit.dump_jsonl([{ "type" => "item.completed", "item" => { "type" => "agent_message", "text" => bytes } }, { "type" => "turn.completed" }])
+      runner = TimingFixReview::Runner.new(output_dir: pilot, scope: "full", jobs: 1)
+      prompt = runner.send(:build_prompt, record)
+      attempt = File.join(pilot, "logs", id, "attempt-01")
+      FileUtils.mkdir_p([attempt, File.join(pilot, "results")])
+      File.write(File.join(pilot, "results", "#{id}.json"), bytes)
+      File.write(File.join(attempt, "events.jsonl"), events)
+      File.write(File.join(attempt, "metadata.yaml"), YAML.dump({
+        "exit_code" => 0, "timed_out" => false, "static_only_verified" => true,
+        "model" => "gpt-5.6-luna", "reasoning_effort" => "high",
+        "corrected_source_digest" => record.fetch("corrected_source_digest"),
+        "result_sha256" => TimingAudit.sha256_bytes(bytes), "events_sha256" => TimingAudit.sha256_bytes(events),
+        "prompt_sha256" => TimingAudit.sha256_bytes(prompt)
+      }))
+      assert_raises(RuntimeError) do
+        TimingFixReviewReuse.run(source: pilot, destination: full, model: "wrong-model", effort: "high")
+      end
+      refute File.directory?(File.join(full, "results"))
+      capture_io { TimingFixReviewReuse.run(source: pilot, destination: full, model: "gpt-5.6-luna", effort: "high") }
+      assert_equal bytes, File.read(File.join(full, "results", "#{id}.json"))
+      index = JSON.parse(File.read(File.join(full, "reused-reviews.json")))
+      assert_equal [id], index.fetch("records").map { |r| r.fetch("program_id") }
+      assert_equal events, File.read(File.join(full, "logs", id, "attempt-01/events.jsonl"))
+      assert_raises(RuntimeError) do
+        TimingFixReviewReuse.run(source: pilot, destination: full, model: "gpt-5.6-luna", effort: "high")
+      end
+    end
+  end
+
   def test_prepares_compiled_trial_without_full_proposals_or_summary
     with_proposals("trial") do |root, proposals, ids|
       manifest = nil
@@ -123,6 +174,8 @@ class TimingFixReviewInventoryTest < Minitest::Test
         FileUtils.mkdir_p(File.dirname(absolute))
         File.write(absolute, original)
         { "id" => id, "source_prefix" => prefix, "metric_label" => "Computation time",
+          "benchmark" => "bench", "model" => "test", "par_type" => "mpi", "overall_score" => nil,
+          "source_digest" => TimingAudit.sha256_bytes(original),
           "source_files" => [{ "path" => path, "git_path" => "#{prefix}/#{path}",
             "sha256" => TimingAudit.sha256_bytes(original), "lines" => 1 }] }
       end

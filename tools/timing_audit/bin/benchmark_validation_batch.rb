@@ -63,22 +63,36 @@ module BenchmarkValidationBatch
     evidence = LocalEvaluation.load_yaml(evidence_path)
     ids_path = File.join(corrections, "correction-ids.txt")
     records_path = File.join(corrections, "corrections.jsonl")
-    ids = File.readlines(ids_path, chomp: true).reject(&:empty?)
+    all_correction_ids = File.readlines(ids_path, chomp: true).reject(&:empty?)
     records = TimingAudit.load_jsonl(records_path)
-    LocalEvaluation::SourceCorrectionAmendment.send(:validate_external_evidence!, evidence, records, ids, records_path, ids_path)
+    LocalEvaluation::SourceCorrectionAmendment.send(:validate_external_evidence!, evidence, records, all_correction_ids, records_path, ids_path)
+    correction_scope = (all_correction_ids - manifest.runs.keys).empty? ? "exact" : "manifest"
     raise "Corrections have another original revision" unless evidence.dig("original_source", "commit") == original.fetch("commit")
+    ids = LocalEvaluation::SourceCorrectionAmendment.send(:validate_scoped_records!, records,
+      all_correction_ids, manifest, original.fetch("commit"), evidence.dig("corrected_source", "commit"), scope: correction_scope)
     raise "Corrections include nonpassing original programs" unless (ids - valid_ids).empty?
     corrected_manifest = LocalEvaluation::Manifest.new(corrected_validation)
     corrected_manifest.verify_input_revisions!
     corrected_results = load_results(corrected_validation)
-    unless corrected_manifest.runs.keys.sort == ids && corrected_results.map(&:id_string).sort == ids &&
+    unless corrected_manifest.runs.keys.sort == all_correction_ids && corrected_results.map(&:id_string).sort == all_correction_ids &&
            corrected_results.all? { |result| fully_valid?(result) } &&
            corrected_manifest.data.dig("experiment_repository", "commit") == evidence.dig("corrected_source", "commit")
       raise "Corrected revalidation does not cover the accepted corrections"
     end
-    %w[pipeline_source resource_profiles benchmark_repository].each do |key|
+    corrected_root = corrected_manifest.data.fetch("experiment_repository").fetch("path")
+    LocalEvaluation::SourceCorrectionAmendment.send(:verify_record_trees!, records, corrected_root,
+      original.fetch("commit"), evidence.dig("corrected_source", "commit"))
+    changed_paths = LocalEvaluation::SourceCorrectionAmendment.send(:git_changed_paths, corrected_root,
+      original.fetch("commit"), evidence.dig("corrected_source", "commit"))
+    raise "Shared correction commit includes unreviewed paths" unless changed_paths == records.flat_map { |record| record.fetch("changed_paths") }.uniq.sort
+    %w[resource_profiles benchmark_repository].each do |key|
       raise "Revalidation changed #{key}" unless corrected_manifest.data.fetch(key) == manifest.data.fetch(key)
     end
+    # The original manifest can have an explicit, verified provenance-only
+    # pipeline amendment before revalidation. Compare the effective pipeline,
+    # not the historical snapshot that the immutable manifest rightly retains.
+    effective_pipeline = LocalEvaluation.pipeline_source_snapshot(manifest.data.fetch("pipeline_source").fetch("root"))
+    raise "Revalidation changed the effective pipeline" unless corrected_manifest.data.fetch("pipeline_source") == effective_pipeline
     original_only = valid_ids - ids
     original_only.each do |id|
       LocalEvaluation::BuildSupport.find_executable(File.join(run_dir, "validation", id), manifest.runs.fetch(id).fetch("benchmark"))
@@ -113,6 +127,8 @@ module BenchmarkValidationBatch
       "manifest_sha256" => LocalEvaluation.sha256_file(manifest.path),
       "configuration_sha256" => frozen.digest, "baseline_configuration_sha256" => baseline.digest,
       "original_source" => original, "corrected_source_commit" => evidence.dig("corrected_source", "commit"),
+      "correction_scope" => correction_scope,
+      "shared_commit_corrections" => all_correction_ids.size,
       "original_source_backup" => File.realpath(original_backup),
       "corrected_validation" => { "run_dir" => File.realpath(corrected_validation),
         "manifest_sha256" => LocalEvaluation.sha256_file(corrected_manifest.path),
@@ -203,6 +219,7 @@ module BenchmarkValidationBatch
     unless File.file?(LocalEvaluation::SourceCorrectionAmendment.path_for(run_dir))
       LocalEvaluation::SourceCorrectionAmendment.create!(manifest: manifest,
         correction_dir: File.join(campaign, "correction-evidence"),
+        scope: data.fetch("correction_scope", "exact"),
         reason: "Benchmark the accepted and revalidated timing-only corrections after completing the unchanged valid programs; retain all existing measurements and inherited settings.")
     end
     phase = "corrected"

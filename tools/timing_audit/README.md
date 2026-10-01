@@ -144,6 +144,9 @@ correction candidate; a later invalid decision supplies the operative findings.
 All parent decision/manifest hashes and the review evidence origins are retained.
 The optional clean checkout must contain the combined reviewed source set; use local
 scratch, not a mutable user worktree. This does not rerun or overwrite earlier audits.
+`bin/timing_fix_review_reuse.rb --source=PILOT --destination=FULL` reuses independent
+pilot reviews only when source/proposal metadata, literal prompts, methods and model
+identities match, retaining a hash-bound copy index and original attempt evidence.
 
 `bin/export_timing_corrections.rb --batch-dir=PATH --proposals=PATH --review=PATH
 --adjudication=PATH --final=PATH --validation-run=PATH --original-source=PATH`
@@ -163,6 +166,19 @@ revalidation, and a clean original-source backup on local scratch. It inherits a
 cells, sizes, iterations, timeouts and target settings without recalibration; only
 the new manifest/validation/seed-path bindings and inheritance provenance change.
 It refuses to overwrite an existing campaign.
+
+A combined correction commit may include programs outside a particular batch.
+The campaign retains the complete correction registry and compiled/revalidated
+coverage, while `SourceCorrectionAmendment`'s explicit `scope: "manifest"` mode
+authorizes only the intersection with that run's IDs. Every original/corrected
+source tree and the full commit's changed-path set must match the registry;
+unreviewed changes are still rejected. Existing exact-scope behavior is the default.
+For a new scoped evaluation initialized at the corrected commit, the explicit
+`revision_mode: "already_corrected"` mode attaches the same correction provenance
+after revalidation, without pretending the run was initialized at the original
+commit. Both modes retain original/corrected source links and require explicit
+corrected-ID benchmark selection. These are provenance/selection extensions;
+benchmark measurement code, resources, arguments and repetitions are unchanged.
 
 ```bash
 ruby tools/timing_audit/bin/benchmark_validation_batch.rb prepare \

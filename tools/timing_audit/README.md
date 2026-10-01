@@ -167,6 +167,20 @@ cells, sizes, iterations, timeouts and target settings without recalibration; on
 the new manifest/validation/seed-path bindings and inheritance provenance change.
 It refuses to overwrite an existing campaign.
 
+If revalidation exposes a pre-existing correctness defect, preserve the original
+pass and failed revalidation as separate observations. After explicit user
+resolution, `prepare --validation-failures=PATH` can accept a hash-bound JSON
+disposition covering **exactly** the failed corrected programs. The records name
+the source commits, revalidation manifest, failed stage, unchanged-defect reason,
+user decision, static review and validation metadata/stdout hashes. These programs
+are counted as validation failures and excluded from all benchmark partitions;
+they are not benchmark failures, retried until passing, or algorithmically repaired.
+Missing/unexpected dispositions and changed evidence block preparation/resume.
+The immutable campaign retains the dispositions and exclusion IDs. Final aggregate
+and release exports must overlay these failed corrected validations onto original
+validation counts while retaining both observations; an earlier pass must never
+restore eligibility. The raw validation files and measurement procedure are unchanged.
+
 A combined correction commit may include programs outside a particular batch.
 The campaign retains the complete correction registry and compiled/revalidated
 coverage, while `SourceCorrectionAmendment`'s explicit `scope: "manifest"` mode

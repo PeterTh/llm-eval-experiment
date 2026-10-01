@@ -19,6 +19,66 @@ module BenchmarkValidationBatch
     STAGES.all? { |stage| result.public_send(stage) == true }
   end
 
+  # Timing-only acceptance is not numerical acceptance. A confirmed pre-existing
+  # correctness defect may supersede an earlier passing observation, but never
+  # silently: require an explicit disposition for exactly the failed reruns.
+  # Raw original and corrected validation evidence remains untouched.
+  def approved_failures(path, corrected_manifest:, corrected_results:, original_commit:, corrected_commit:)
+    failed = corrected_results.reject { |result| fully_valid?(result) }.to_h { |result| [result.id_string, result] }
+    return {} if path.nil? && failed.empty?
+    raise "Corrected revalidation has unresolved failures: #{failed.keys.sort.join(', ')}" if path.nil?
+
+    data = JSON.parse(File.read(path))
+    unless data.fetch("schema_version") == 1 && data.fetch("original_source_commit") == original_commit &&
+           data.fetch("corrected_source_commit") == corrected_commit &&
+           data.fetch("corrected_validation_manifest_sha256") == LocalEvaluation.sha256_file(corrected_manifest.path)
+      raise "Validation failure dispositions have different source or validation provenance"
+    end
+    entries = data.fetch("records")
+    ids = entries.map { |entry| entry.fetch("program_id") }
+    unless !ids.empty? && ids == ids.uniq.sort && ids == failed.keys.sort
+      raise "Validation failure dispositions must cover exactly the failed corrected programs"
+    end
+    entries.each do |entry|
+      id = entry.fetch("program_id")
+      result = failed.fetch(id)
+      stages = STAGES.to_h { |stage| [stage, result.public_send(stage) == true] }
+      unless entry.fetch("decision") == "fail_validation" &&
+             entry.fetch("classification") == "pre_existing_correctness_failure" &&
+             entry.fetch("failed_stage") == STAGES.find { |stage| !stages.fetch(stage) } &&
+             !entry.fetch("reason").strip.empty? &&
+             entry.dig("authorization", "source") == "user" &&
+             !entry.fetch("authorization").fetch("statement").strip.empty?
+        raise "Invalid validation failure disposition for #{id}"
+      end
+      directory = File.join(File.dirname(corrected_manifest.path), "validation", id)
+      metadata_path = File.join(directory, "validation_metadata.yaml")
+      metadata = LocalEvaluation.load_yaml(metadata_path)
+      unless metadata.fetch("id") == id && metadata.fetch("stages") == stages &&
+             metadata.fetch("manifest_sha256") == LocalEvaluation.sha256_file(corrected_manifest.path)
+        raise "Failed validation metadata differs for #{id}"
+      end
+      { "metadata_sha256" => metadata_path,
+        "stdout_sha256" => File.join(directory, "validation_out_stdout.log") }.each do |key, evidence_path|
+        raise "Failed validation evidence changed for #{id}" unless entry.fetch("validation_evidence").fetch(key) == LocalEvaluation.sha256_file(evidence_path)
+      end
+      review = entry.fetch("static_review")
+      unless !review.fetch("model").strip.empty? && review.fetch("sha256") == LocalEvaluation.sha256_file(review.fetch("path"))
+        raise "Static failure adjudication changed for #{id}"
+      end
+    end
+    entries.to_h { |entry| [entry.fetch("program_id"), entry] }
+  end
+
+  def eligible_partition(original_valid_ids, correction_ids, excluded_ids)
+    unless (correction_ids - original_valid_ids).empty? && (excluded_ids - correction_ids).empty?
+      raise "Invalid corrected/excluded benchmark partition"
+    end
+    valid = (original_valid_ids - excluded_ids).sort
+    corrected = (correction_ids - excluded_ids).sort
+    { valid: valid, corrected: corrected, unchanged: valid - corrected }
+  end
+
   def inherited_config(baseline, manifest_sha:, validation_sha:, count:, seed_path:, baseline_path:, baseline_sha:)
     config = Marshal.load(Marshal.dump(baseline))
     config.delete("frozen_at")
@@ -43,7 +103,8 @@ module BenchmarkValidationBatch
     rebound
   end
 
-  def prepare(run_dir:, baseline_config:, corrections:, corrected_validation:, original_backup:, canary_model:)
+  def prepare(run_dir:, baseline_config:, corrections:, corrected_validation:, original_backup:, canary_model:,
+              validation_failures: nil)
     run_dir = File.realpath(run_dir)
     campaign = File.join(run_dir, "benchmark-campaign")
     raise "Campaign already exists" if File.exist?(campaign)
@@ -58,6 +119,7 @@ module BenchmarkValidationBatch
     results = load_results(run_dir)
     raise "Original validation is incomplete" unless results.map(&:id_string).sort == manifest.runs.keys.sort
     valid_ids = results.select { |result| fully_valid?(result) }.map(&:id_string).sort
+    originally_valid_count = valid_ids.size
     manifest.verify_input_revisions!(operation: "benchmark", selected_ids: valid_ids)
     evidence_path = File.join(corrections, "manifest.yaml")
     evidence = LocalEvaluation.load_yaml(evidence_path)
@@ -75,10 +137,15 @@ module BenchmarkValidationBatch
     corrected_manifest.verify_input_revisions!
     corrected_results = load_results(corrected_validation)
     unless corrected_manifest.runs.keys.sort == all_correction_ids && corrected_results.map(&:id_string).sort == all_correction_ids &&
-           corrected_results.all? { |result| fully_valid?(result) } &&
            corrected_manifest.data.dig("experiment_repository", "commit") == evidence.dig("corrected_source", "commit")
       raise "Corrected revalidation does not cover the accepted corrections"
     end
+    failures = approved_failures(validation_failures, corrected_manifest: corrected_manifest,
+      corrected_results: corrected_results, original_commit: original.fetch("commit"),
+      corrected_commit: evidence.dig("corrected_source", "commit"))
+    excluded_ids = (failures.keys & manifest.runs.keys).sort
+    partition = eligible_partition(valid_ids, ids, excluded_ids)
+    valid_ids, ids, original_only = partition.values_at(:valid, :corrected, :unchanged)
     corrected_root = corrected_manifest.data.fetch("experiment_repository").fetch("path")
     LocalEvaluation::SourceCorrectionAmendment.send(:verify_record_trees!, records, corrected_root,
       original.fetch("commit"), evidence.dig("corrected_source", "commit"))
@@ -93,7 +160,6 @@ module BenchmarkValidationBatch
     # not the historical snapshot that the immutable manifest rightly retains.
     effective_pipeline = LocalEvaluation.pipeline_source_snapshot(manifest.data.fetch("pipeline_source").fetch("root"))
     raise "Revalidation changed the effective pipeline" unless corrected_manifest.data.fetch("pipeline_source") == effective_pipeline
-    original_only = valid_ids - ids
     original_only.each do |id|
       LocalEvaluation::BuildSupport.find_executable(File.join(run_dir, "validation", id), manifest.runs.fetch(id).fetch("benchmark"))
     end
@@ -110,8 +176,12 @@ module BenchmarkValidationBatch
     frozen = LocalEvaluation::BenchmarkConfig.new(File.join(run_dir, "benchmark_config.yaml"))
     raise "Inherited measurement settings changed" unless frozen.data.fetch("cells") == baseline.data.fetch("cells") &&
       frozen.data.fetch("target_seconds") == baseline.data.fetch("target_seconds")
-    { "unchanged-ids.txt" => original_only, "corrected-ids.txt" => ids, "canary-ids.txt" => canaries }.each do |name, list|
+    { "unchanged-ids.txt" => original_only, "corrected-ids.txt" => ids, "canary-ids.txt" => canaries,
+      "excluded-validation-ids.txt" => excluded_ids }.each do |name, list|
       LocalEvaluation.atomic_write(File.join(campaign, name), list.join("\n") + "\n", mode: 0o444)
+    end
+    if validation_failures
+      LocalEvaluation.atomic_write(File.join(campaign, "validation-failures.json"), File.binread(validation_failures), mode: 0o444)
     end
     derived = File.join(campaign, "correction-evidence")
     %w[corrections.jsonl correction-ids.txt].each do |name|
@@ -121,8 +191,9 @@ module BenchmarkValidationBatch
       original_sha: LocalEvaluation.sha256_file(evidence_path))
     LocalEvaluation.atomic_yaml_with_digest(File.join(derived, "manifest.yaml"), bound, immutable: true)
     LocalEvaluation.atomic_write(File.join(campaign, "runner-snapshot.rb"), File.binread(__FILE__), mode: 0o444)
-    artifacts = %w[unchanged-ids.txt corrected-ids.txt canary-ids.txt correction-evidence/manifest.yaml
+    artifacts = %w[unchanged-ids.txt corrected-ids.txt canary-ids.txt excluded-validation-ids.txt correction-evidence/manifest.yaml
                    correction-evidence/corrections.jsonl correction-evidence/correction-ids.txt runner-snapshot.rb]
+    artifacts << "validation-failures.json" if validation_failures
     data = { "schema_version" => 1, "created_at" => Time.now.iso8601, "run_dir" => run_dir,
       "manifest_sha256" => LocalEvaluation.sha256_file(manifest.path),
       "configuration_sha256" => frozen.digest, "baseline_configuration_sha256" => baseline.digest,
@@ -134,10 +205,13 @@ module BenchmarkValidationBatch
         "manifest_sha256" => LocalEvaluation.sha256_file(corrected_manifest.path),
         "results_sha256" => LocalEvaluation.sha256_file(File.join(corrected_validation, "validation/all_validation_results.yaml")) },
       "valid_programs" => valid_ids.size, "unchanged_programs" => original_only.size, "corrected_programs" => ids.size,
+      "originally_valid_programs" => originally_valid_count, "excluded_validation_programs" => excluded_ids.size,
+      "excluded_validation_ids" => excluded_ids,
+      "validation_policy" => "Original validation is immutable; explicitly adjudicated failed revalidations supersede earlier passes for eligibility and final validation totals, never as benchmark failures.",
       "warmups" => 1, "measurements" => BENCHMARK_COUNT,
       "artifacts" => artifacts.to_h { |name| [name, LocalEvaluation.sha256_file(File.join(campaign, name))] } }
     LocalEvaluation.atomic_yaml_with_digest(File.join(campaign, "manifest.yaml"), data, immutable: true)
-    puts "Prepared #{valid_ids.size} programs: #{original_only.size} unchanged, #{ids.size} corrected; no validation or calibration repeated"
+    puts "Prepared #{valid_ids.size} programs: #{original_only.size} unchanged, #{ids.size} corrected, #{excluded_ids.size} excluded after failed revalidation; no validation or calibration repeated"
     data
   ensure
     host_lock&.close
@@ -155,6 +229,22 @@ module BenchmarkValidationBatch
     end
     raise "Run manifest changed" unless LocalEvaluation.sha256_file(File.join(run_dir, "evaluation_manifest.yaml")) == data.fetch("manifest_sha256")
     raise "Configuration changed" unless LocalEvaluation::BenchmarkConfig.new(File.join(run_dir, "benchmark_config.yaml")).digest == data.fetch("configuration_sha256")
+    if data.fetch("artifacts").key?("validation-failures.json")
+      corrected = data.fetch("corrected_validation")
+      corrected_root = corrected.fetch("run_dir")
+      corrected_manifest = LocalEvaluation::Manifest.new(corrected_root)
+      unless corrected.fetch("manifest_sha256") == LocalEvaluation.sha256_file(corrected_manifest.path) &&
+             corrected.fetch("results_sha256") == LocalEvaluation.sha256_file(File.join(corrected_root, "validation/all_validation_results.yaml"))
+        raise "Adjudicated revalidation evidence changed"
+      end
+      failures = approved_failures(File.join(root, "validation-failures.json"),
+        corrected_manifest: corrected_manifest, corrected_results: load_results(corrected_root),
+        original_commit: data.dig("original_source", "commit"), corrected_commit: data.fetch("corrected_source_commit"))
+      excluded = (failures.keys & LocalEvaluation::Manifest.new(run_dir).runs.keys).sort
+      unless excluded == data.fetch("excluded_validation_ids") && excluded.size == data.fetch("excluded_validation_programs")
+        raise "Adjudicated benchmark exclusions changed"
+      end
+    end
     data
   end
 
@@ -266,9 +356,11 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--corrected-validation=PATH") { |v| options[:corrected_validation] = File.expand_path(v) }
     opts.on("--original-backup=PATH") { |v| options[:original_backup] = File.expand_path(v) }
     opts.on("--canary-model=MODEL") { |v| options[:canary_model] = v }
+    opts.on("--validation-failures=PATH", "Explicit user-approved dispositions for pre-existing correctness failures") { |v| options[:validation_failures] = File.expand_path(v) }
   end.parse!
   required = command == "prepare" ? %i[run_dir baseline_config corrections corrected_validation original_backup canary_model] : %i[run_dir]
   abort "Usage: benchmark_validation_batch.rb prepare|run|status --run-dir=PATH [preparation options]" unless
-    %w[prepare run status].include?(command) && ARGV.empty? && options.keys.sort == required.sort
+    %w[prepare run status].include?(command) && ARGV.empty? &&
+    (options.keys - (command == "prepare" ? [:validation_failures] : [])).sort == required.sort
   BenchmarkValidationBatch.public_send(command, **options)
 end

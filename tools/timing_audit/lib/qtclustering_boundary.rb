@@ -57,6 +57,7 @@ module QtclusteringBoundary
 
   def review_selection(main_root)
     pilot = File.readlines(File.join(main_root, "trial-ids.txt"), chomp: true)
+    source_root = YAML.safe_load_file(File.join(main_root, "manifest.yaml")).fetch("generated_source").fetch("root")
     TimingAudit.load_jsonl(File.join(main_root, "inventory.jsonl")).filter_map do |record|
       id = record.fetch("id")
       result = JSON.parse(File.read(File.join(main_root, "results", "#{id}.json")))
@@ -64,11 +65,21 @@ module QtclusteringBoundary
       reasons << "pilot_quality_control" if pilot.include?(id)
       reasons << "non_valid" unless result.fetch("verdict") == "valid"
       reasons << "uncertain" unless result.fetch("confidence") == "high"
-      if %w[mpi hybrid].include?(record.fetch("par_type")) && !record.dig("static_features", "has_mpi_max")
+      if %w[mpi hybrid].include?(record.fetch("par_type")) && !explicit_mpi_max?(record, source_root)
         reasons << "global_makespan_control"
       end
       next if reasons.empty?
       { "program_id" => id, "reasons" => reasons }
+    end
+  end
+
+  # MPI_MAXLOC does not aggregate elapsed durations. Do not let the older
+  # inventory's substring feature suppress independent makespan controls.
+  def explicit_mpi_max?(record, source_root)
+    record.fetch("source_files").reject { |file| file.fetch("path") == "instruction.txt" }.any? do |file|
+      bytes = File.binread(File.join(source_root, file.fetch("git_path")))
+      raise "Source changed during control selection" unless TimingAudit.sha256_bytes(bytes) == file.fetch("sha256")
+      bytes.match?(/\bMPI_MAX\b/)
     end
   end
 

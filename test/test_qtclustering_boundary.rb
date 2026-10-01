@@ -120,6 +120,19 @@ class QtclusteringBoundaryTest < Minitest::Test
     end
   end
 
+  def test_maxloc_does_not_suppress_makespan_review
+    Dir.mktmpdir do |root|
+      path = File.join(root, "source.cpp")
+      ["MPI_MAXLOC", "MPI_MAX"].each do |token|
+        File.write(path, token)
+        record = { "source_files" => [{ "path" => "source.cpp", "git_path" => "source.cpp", "sha256" => TimingAudit.sha256_bytes(token) }] }
+        assert_equal token == "MPI_MAX", QtclusteringBoundary.explicit_mpi_max?(record, root)
+        File.write(path, "changed")
+        assert_raises(RuntimeError) { QtclusteringBoundary.explicit_mpi_max?(record, root) }
+      end
+    end
+  end
+
   private
 
   def write(path, content)

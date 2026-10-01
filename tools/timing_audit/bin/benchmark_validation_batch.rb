@@ -50,7 +50,6 @@ module BenchmarkValidationBatch
     run_lock = LocalEvaluation::RunLock.new(run_dir)
     host_lock = LocalEvaluation::HostPerformanceLock.new
     manifest = LocalEvaluation::Manifest.new(run_dir)
-    manifest.verify_input_revisions!
     original = manifest.data.fetch("experiment_repository")
     TimingAudit::SourceRepository.new(root: original_backup, commit: original.fetch("commit"))
     baseline = LocalEvaluation::BenchmarkConfig.new(baseline_config)
@@ -59,6 +58,7 @@ module BenchmarkValidationBatch
     results = load_results(run_dir)
     raise "Original validation is incomplete" unless results.map(&:id_string).sort == manifest.runs.keys.sort
     valid_ids = results.select { |result| fully_valid?(result) }.map(&:id_string).sort
+    manifest.verify_input_revisions!(operation: "benchmark", selected_ids: valid_ids)
     evidence_path = File.join(corrections, "manifest.yaml")
     evidence = LocalEvaluation.load_yaml(evidence_path)
     ids_path = File.join(corrections, "correction-ids.txt")

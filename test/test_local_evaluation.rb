@@ -397,7 +397,8 @@ class LocalEvaluationTest < Minitest::Test
     assert_equal 11_023.0, pi.total_tokens
 
     codex = aggregate_metadata(pipeline, "codex", "Total code changes: +3 -2\ntokens used\n49,867\n")
-    assert_equal 49_867.0, codex.total_tokens
+    assert_nil codex.total_tokens
+    assert_equal 49_867, codex.legacy_reported_tokens
     assert_nil codex.input_tokens
 
     claude = aggregate_metadata(pipeline, "claude", <<~OUT)

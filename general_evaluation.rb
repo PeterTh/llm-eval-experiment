@@ -11,6 +11,8 @@ VS_FULLY_VALID = 5
 class AggregateEvaluation
   attr_reader :benchmark, :model, :par_type, :run
   attr_accessor :input_tokens, :output_tokens, :cached_tokens
+  attr_accessor :reasoning_output_tokens, :cache_write_input_tokens, :legacy_reported_tokens
+  attr_accessor :token_usage_source, :token_usage_session_id
   attr_accessor :api_time, :total_time
   attr_accessor :raw_api_time, :raw_total_time, :agent_retry_count, :agent_retry_backoff_seconds
   attr_accessor :code_additions, :code_deletions

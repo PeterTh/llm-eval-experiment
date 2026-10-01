@@ -25,6 +25,7 @@ options = {
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: ruby local_evaluation.rb #{command} [options]"
   opts.on("--run-dir=PATH", "Combined local evaluation run directory") { |value| options[:run_dir] = File.expand_path(value) }
+  opts.on("--codex-usage=PATH", "Provenance-bound Codex token-usage JSONL for aggregation") { |value| options[:codex_usage_path] = File.expand_path(value) }
   opts.on("--experiments-root=PATH", "Root containing timestamped experiment batches") { |value| options[:experiments_root] = File.expand_path(value) }
   opts.on("--benchmarks-root=PATH", "Sequential benchmark repository") { |value| options[:benchmarks_root] = File.expand_path(value) }
   opts.on("--seed=PATH", "Calibration seed YAML") { |value| options[:seed] = File.expand_path(value) }
@@ -194,7 +195,8 @@ begin
       with_performance_lock do
         verify_inputs!(run_dir, operation: command, options: options)
         LocalEvaluation::AggregatePipeline.new(run_dir: run_dir, exact_id: options[:exact_id],
-                                               filter: options[:filter], dry_run: options[:dry_run]).run
+                                               filter: options[:filter], dry_run: options[:dry_run],
+                                               codex_usage_path: options[:codex_usage_path]).run
       end
     end
   when "prepare-scoring"

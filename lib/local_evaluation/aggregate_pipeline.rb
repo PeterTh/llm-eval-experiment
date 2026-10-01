@@ -1,3 +1,5 @@
+require_relative "../codex_usage"
+
 module LocalEvaluation
   class AggregatePipeline
     SOURCE_EXTENSIONS = %w[.c .cc .cpp .cu .h .hh .hpp].freeze
@@ -30,12 +32,19 @@ module LocalEvaluation
 
     class DiffScanLimit < StandardError; end
 
-    def initialize(run_dir:, exact_id: nil, filter: nil, dry_run: false)
+    def initialize(run_dir:, exact_id: nil, filter: nil, dry_run: false, codex_usage_path: nil)
       @run_dir = File.expand_path(run_dir)
       @manifest = Manifest.new(@run_dir)
       @selected = @manifest.filtered_runs(exact_id: exact_id, filter: filter)
       @source_correction = SourceCorrectionAmendment.load(@run_dir, manifest: @manifest)
       @dry_run = dry_run
+      @codex_usage_path = codex_usage_path && File.expand_path(codex_usage_path)
+      @codex_usage_sha256 = @codex_usage_path && LocalEvaluation.sha256_file(@codex_usage_path)
+      @codex_usage = @codex_usage_path ? CodexUsage.load_records(@codex_usage_path) : {}
+      raise CodexUsage::Invalid, "usage evidence contains IDs outside manifest" unless (@codex_usage.keys - @manifest.runs.keys).empty?
+      if @codex_usage_path && @selected.size != @manifest.runs.size
+        raise CodexUsage::Invalid, "usage overlays require a full metadata aggregation, not a partial refresh"
+      end
       warnings_path = File.join(@run_dir, "aggregate_parse_warnings.yaml")
       @warnings = File.file?(warnings_path) ? (LocalEvaluation.load_yaml(warnings_path) || {}) : {}
     end
@@ -88,6 +97,9 @@ module LocalEvaluation
     private
 
     def current_input_digests
+      if @codex_usage_path && optional_sha256(@codex_usage_path) != @codex_usage_sha256
+        raise CodexUsage::Invalid, "usage evidence changed after loading"
+      end
       validation_path = File.join(@run_dir, "validation", "all_validation_results.yaml")
       raise "Validation results not found: #{validation_path}" unless File.file?(validation_path)
 
@@ -99,7 +111,9 @@ module LocalEvaluation
         "benchmark_full_results_sha256" => optional_sha256(
           File.join(@run_dir, "benchmark", BENCHMARK_FULL_RESULTS_FN)
         ),
-        "benchmark_config_sha256" => optional_sha256(File.join(@run_dir, "benchmark_config.yaml"))
+        "benchmark_config_sha256" => optional_sha256(File.join(@run_dir, "benchmark_config.yaml")),
+        "codex_usage_path" => @codex_usage_path,
+        "codex_usage_sha256" => @codex_usage_path && optional_sha256(@codex_usage_path)
       }
     end
 
@@ -170,8 +184,14 @@ module LocalEvaluation
     end
 
     def parse_agent_metadata(id, info, result)
+      codex_record = @codex_usage && @codex_usage[id]
       timing_path = File.join(info["source_path"], "timing.txt")
       output_path = File.join(info["source_path"], "output.txt")
+      if codex_record
+        raise CodexUsage::Invalid, "missing transcript for usage evidence #{id}" unless File.file?(output_path)
+        raise CodexUsage::Invalid, "missing source batch for usage evidence #{id}" unless info["batch"].is_a?(String)
+        counters = CodexUsage.verify_transcript!(codex_record, id: id, batch: info["batch"], path: output_path)
+      end
       if File.file?(timing_path) && (match = read_limited(timing_path).match(/Duration:\s+(?<seconds>\d+(?:\.\d+)?)\s+seconds/))
         result.total_time = match[:seconds].to_f
       else
@@ -205,7 +225,17 @@ module LocalEvaluation
 
       claude_usage = claude && claude_token_usage(claude)
       usage = output.scan(/^\s*[\w.\/-]+\s+(?<input>\d+(?:\.\d+)?[kKmM]?) in,\s+(?<output>\d+(?:\.\d+)?[kKmM]?) out,\s+(?<cached>\d+(?:\.\d+)?[kKmM]?) cached/m)
-      if claude_usage
+      if codex_record
+        result.input_tokens = counters.fetch("input_tokens")
+        result.cached_tokens = counters.fetch("cached_input_tokens")
+        result.output_tokens = counters.fetch("output_tokens")
+        result.total_tokens = counters.fetch("total_tokens")
+        result.reasoning_output_tokens = counters["reasoning_output_tokens"]
+        result.cache_write_input_tokens = counters["cache_write_input_tokens"]
+        result.legacy_reported_tokens = codex_record.fetch("legacy_reported_tokens")
+        result.token_usage_source = codex_record.fetch("source")
+        result.token_usage_session_id = codex_record.fetch("session_id")
+      elsif claude_usage
         # Claude Code counts only uncached tokens in input_tokens, so on a cache-heavy agentic run
         # it reports tens of tokens where the model actually processed hundreds of thousands. The
         # Copilot rows this column is shared with report total input with the cached part as a
@@ -228,8 +258,9 @@ module LocalEvaluation
         result.cached_tokens = match[:cached].to_f
         result.total_tokens = result.input_tokens + result.output_tokens
       elsif (match = output.match(/tokens used\s*\n\s*(?<total>[\d,]+)/i))
-        result.total_tokens = match[:total].delete(",").to_f
-        warn_for(id, "Codex reports only total tokens; input/output/cache fields are unavailable")
+        result.legacy_reported_tokens = match[:total].delete(",").to_i
+        result.token_usage_source = "codex_terminal_legacy"
+        warn_for(id, "Codex terminal count excludes cached input; recover exact usage with --codex-usage before cost analysis")
       elsif (match = output.match(/Tokens\s+↑\s*(?<input>\d+(?:\.\d+)?[kKmM]?)\s*•\s*↓\s*(?<output>\d+(?:\.\d+)?[kKmM]?)\s*•\s*(?<cached>\d+(?:\.\d+)?[kKmM]?)\s*\(cached\)/))
         result.input_tokens = token_number(match[:input])
         result.output_tokens = token_number(match[:output])
@@ -238,7 +269,10 @@ module LocalEvaluation
       else
         warn_for(id, "No supported token-usage format found")
       end
+    rescue CodexUsage::Invalid
+      raise
     rescue StandardError => e
+      raise CodexUsage::Invalid, "Evidence-bound metadata failed for #{id}: #{e.class}: #{e.message}" if codex_record
       warn_for(id, "Agent metadata parse error: #{e.class}: #{e.message}")
       apply_diff_counts(id, info, result) if result.code_additions.nil?
     end
@@ -641,6 +675,7 @@ module LocalEvaluation
         original_source_commit corrected_source_commit original_source_digest corrected_source_digest
         original_source_url corrected_source_url source_correction_amendment_sha256
         raw_api_time raw_total_time agent_retry_count agent_retry_backoff_seconds
+        reasoning_output_tokens cache_write_input_tokens legacy_reported_tokens token_usage_source token_usage_session_id
       ]
       rows = results.map do |_id, result|
         [result.benchmark, result.model, result.par_type, result.run, result.input_tokens,
@@ -656,7 +691,9 @@ module LocalEvaluation
          result.original_source_url, result.corrected_source_url,
          result.source_correction_amendment_sha256,
          result.raw_api_time, result.raw_total_time,
-         result.agent_retry_count, result.agent_retry_backoff_seconds]
+         result.agent_retry_count, result.agent_retry_backoff_seconds,
+         result.reasoning_output_tokens, result.cache_write_input_tokens, result.legacy_reported_tokens,
+         result.token_usage_source, result.token_usage_session_id]
       end
       csv = CSV.generate { |out| out << headers; rows.each { |row| out << row } }
       LocalEvaluation.atomic_write(path, csv)

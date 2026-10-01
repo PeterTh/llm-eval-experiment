@@ -8,6 +8,7 @@ module LocalEvaluation
       original_source_commit corrected_source_commit original_source_digest corrected_source_digest
       original_source_url corrected_source_url source_correction_amendment_sha256
       raw_api_time raw_total_time agent_retry_count agent_retry_backoff_seconds
+      reasoning_output_tokens cache_write_input_tokens legacy_reported_tokens token_usage_source token_usage_session_id
     ].freeze
 
     def self.prepare(run_dir:, exact_id: nil, filter: nil, dry_run: false)
@@ -182,6 +183,13 @@ module LocalEvaluation
         raise "Aggregate is stale or tampered: #{label} digest changed; rerun aggregate"
       end
 
+      if metadata["codex_usage_path"]
+        usage_path = metadata.fetch("codex_usage_path")
+        unless File.file?(usage_path) && LocalEvaluation.sha256_file(usage_path) == metadata.fetch("codex_usage_sha256")
+          raise "Aggregate is stale or tampered: Codex usage digest changed; rerun aggregate"
+        end
+      end
+
       if metadata["record_count"] != results.size
         raise "Aggregate is stale or tampered: metadata record count does not match aggregate_results.yaml"
       end
@@ -285,7 +293,9 @@ module LocalEvaluation
        result.original_source_url, result.corrected_source_url,
        result.source_correction_amendment_sha256,
        result.raw_api_time, result.raw_total_time,
-       result.agent_retry_count, result.agent_retry_backoff_seconds]
+       result.agent_retry_count, result.agent_retry_backoff_seconds,
+       result.reasoning_output_tokens, result.cache_write_input_tokens, result.legacy_reported_tokens,
+       result.token_usage_source, result.token_usage_session_id]
     end
     private_class_method :aggregate_row
   end

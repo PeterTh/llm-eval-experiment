@@ -90,6 +90,25 @@ source revision, and set `LLM_EVAL_CLAUDE_BINARY` to a versioned executable when
 pinning Claude Code. Keep persistent campaign records under home, temporary work
 on local storage, and the `llmtest` account free of unrelated sessions during runs.
 
+`tools/generation_campaign.rb gate|run|status CAMPAIGN_ROOT` provides serial
+supervision for a frozen Claude campaign. Its persistent `campaign.json` and
+`run-ids.txt` identify the pinned harness, executable, model, budget, paths and
+complete ordered selection. `gate` accepts an existing production preflight based
+only on harness metadata, not on the generated program's correctness. `run`
+reuses completed observations and invokes the frozen `runtime_root/run.rb` for
+one pending ID at a time. It checks model identity, permitted capabilities, token
+accounting and completion records between runs. An anomaly or a `STOP` file in
+the campaign directory stops further launches; it does not regenerate completed
+work. Genuine full-budget timeouts are retained as observations.
+
+The supervisor writes progress and per-observation records under the campaign
+directory. `status` records the generation service's state and can be scheduled
+about every four hours. After generation it commits only the new batch in the
+generated-source repository, subject to its ignore rules; pre-existing staged
+work, nested repositories or missing metadata require operator review. Validation
+and benchmarking are separate subsequent stages. Freeze and retain the supervisor
+alongside the launch scripts before unattended use.
+
 ### Main Pipeline (in execution order)
 
 | Script | Description |

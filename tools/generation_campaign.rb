@@ -1,0 +1,165 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+require "fileutils"
+require "open3"
+require "time"
+require_relative "../lib/claude_generation_observation"
+
+# Serial orchestration around experiment.rb, not a replacement generation harness.
+# Checks run only between observations; no compilation, validation or performance runs.
+class GenerationCampaign
+  def initialize(root)
+    @root = File.realpath(root)
+    @manifest = JSON.parse(File.read(File.join(@root, "campaign.json")))
+    @ids = File.readlines(File.join(@root, "run-ids.txt"), chomp: true)
+    raise "Invalid campaign IDs" unless @ids.size == @manifest.fetch("expected_runs") && @ids.uniq == @ids && @ids.all? { |id| id.match?(/\A[a-zA-Z0-9_.-]+\z/) }
+    @batch = @manifest.fetch("campaign_id")
+    raise "Invalid campaign timestamp" unless @batch.match?(/\A\d{8}-\d{6}\z/)
+    @results = @manifest.fetch("persistent_results")
+    @observations = File.join(@root, "observations")
+    FileUtils.mkdir_p(@observations)
+  end
+
+  def json(name, value)
+    target = File.join(@root, name)
+    temporary = "#{target}.#{Process.pid}.tmp"
+    File.write(temporary, JSON.pretty_generate(value) + "\n")
+    File.rename(temporary, target)
+  end
+
+  def observation(id, baseline: nil)
+    report = ClaudeGenerationObservation.read(File.join(@results, id), model: @manifest.fetch("invoked_model"),
+      version: @manifest.fetch("claude_version"), timeout_seconds: @manifest.fetch("per_run_timeout_seconds"), baseline: baseline)
+    path = File.join(@observations, "#{id}.json")
+    raise "Completed observation changed: #{id}" if File.file?(path) && JSON.parse(File.read(path)) != report
+    json("observations/#{id}.json", report) unless File.file?(path)
+    report
+  end
+
+  def gate
+    report = observation(@manifest.fetch("preflight_id"))
+    raise "Preflight infrastructure incomplete" unless report.fetch("outcome") == "completed"
+    existing = File.join(@root, "preflight-gate.json")
+    value = { "accepted" => true, "preflight" => report,
+      "criterion" => "Harness identity, isolation, metadata and production budget only; generated-program correctness is not a selection criterion." }
+    raise "Preflight gate differs" if File.file?(existing) && JSON.parse(File.read(existing)) != value
+    json("preflight-gate.json", value) unless File.file?(existing)
+    puts "Preflight accepted: #{report.fetch('id')} (#{report.fetch('raw_total_seconds')}s)"
+  end
+
+  def snapshot(status, active_id: nil, error: nil)
+    reports = Dir[File.join(@observations, "*.json")].sort.map { |p| JSON.parse(File.read(p)) }
+    value = { "campaign_id" => @batch, "checked_at" => Time.now.utc.iso8601, "status" => status,
+      "expected" => @ids.size, "completed" => reports.size, "active_id" => active_id,
+      "outcomes" => reports.group_by { |r| r.fetch("outcome") }.transform_values(&:size),
+      "raw_generation_seconds" => reports.sum { |r| r.fetch("raw_total_seconds") },
+      "retained_total_tokens" => reports.sum { |r| r.fetch("total_tokens", 0) }, "error" => error }
+    json("progress.json", value)
+    puts JSON.generate(value)
+    value
+  end
+
+  def status
+    progress = File.join(@root, "progress.json")
+    value = File.file?(progress) ? JSON.parse(File.read(progress)) : { "status" => "prepared", "completed" => 0, "expected" => @ids.size }
+    unit, result = Open3.capture2("systemctl", "--user", "show", @manifest.fetch("generation_unit"),
+      "-p", "LoadState", "-p", "ActiveState", "-p", "SubState", "-p", "ExecMainStatus")
+    unit_state = result.success? ? unit.lines.to_h { |line| line.strip.split("=", 2) } : {}
+    health = if %w[complete needs_review].include?(value["status"])
+      value["status"]
+    elsif unit_state["ActiveState"] != "active"
+      "unexpected_stop"
+    else
+      "running"
+    end
+    value = value.merge("observed_at" => Time.now.utc.iso8601, "monitor_health" => health, "unit" => unit_state)
+    json("monitor-status.json", value)
+    puts JSON.generate(value)
+  end
+
+  def run
+    lock = File.open(File.join(@root, "controller.lock"), "a")
+    locked = lock.flock(File::LOCK_EX | File::LOCK_NB)
+    raise "Another controller is active" unless locked
+    gate_data = JSON.parse(File.read(File.join(@root, "preflight-gate.json")))
+    raise "Preflight not accepted" unless gate_data.fetch("accepted")
+    baseline = gate_data.fetch("preflight")
+    unexpected = Dir.children(@results) - @ids
+    raise "Unexpected result directories: #{unexpected.join(', ')}" unless unexpected.empty?
+    @ids.each do |id|
+      raise "Operator stop requested" if File.exist?(File.join(@root, "STOP"))
+      directory = File.join(@results, id)
+      if File.file?(File.join(directory, "timing.txt"))
+        observation(id, baseline: baseline)
+        next
+      end
+      raise "Incomplete canonical observation: #{id}" if File.exist?(directory)
+      snapshot("running", active_id: id)
+      ensure_account_idle!
+      ids_path = File.join(@root, "active-run-ids.txt")
+      File.write(ids_path, "#{id}\n")
+      command = ["/usr/bin/ruby", File.join(@manifest.fetch("runtime_root"), "run.rb"), "--production", "--run",
+        "--continue=#{@batch}", "--run-ids=#{ids_path}"]
+      puts "Launching #{id} at #{Time.now.utc.iso8601}"
+      raise "Harness exited unsuccessfully for #{id}" unless launch(command)
+      observation(id, baseline: baseline)
+      snapshot("running")
+    end
+    snapshot("generation_complete")
+    commit_outputs
+    snapshot("complete")
+  rescue StandardError => e
+    snapshot("needs_review", error: "#{e.class}: #{e.message}") if locked
+    warn "Campaign stopped without repeating completed observations: #{e.message}"
+    raise
+  ensure
+    lock&.close
+  end
+
+  def ensure_account_idle!
+    pids, result = Open3.capture2("pgrep", "-u", "llmtest")
+    raise "Cannot determine whether llmtest is idle" unless [0, 1].include?(result.exitstatus)
+    raise "llmtest has an unrelated process; refusing cleanup" unless result.exitstatus == 1 && pids.strip.empty?
+  end
+
+  def launch(command)
+    system(*command)
+  end
+
+  def git(*arguments)
+    output, status = Open3.capture2e("git", "-C", File.dirname(@results), *arguments)
+    raise "Git #{arguments.first} failed: #{output}" unless status.success?
+    output
+  end
+
+  def commit_outputs
+    raise "Not on the expected generated-source branch" unless git("branch", "--show-current").strip == "claude"
+    raise "Existing staged user changes; leave them untouched" unless git("diff", "--cached", "--name-only").empty?
+    @ids.each do |id|
+      # Never let git add collapse a program into a gitlink instead of retaining its code.
+      raise "Nested repository requires preservation review: #{id}" unless Dir.glob(File.join(@results, id, "**/.git"), File::FNM_DOTMATCH).empty?
+    end
+    git("add", "--", @batch)
+    staged = git("diff", "--cached", "--name-only", "-z").split("\0")
+    raise "Staged paths outside this campaign" unless !staged.empty? && staged.all? { |p| p.start_with?("#{@batch}/") }
+    entries = git("ls-files", "--stage", "--", @batch).lines
+    raise "Gitlink or symlink in staged source" unless entries.all? { |line| line.start_with?("100644 ", "100755 ") }
+    @ids.each do |id|
+      %w[output.txt timing.txt instruction.txt usage.txt process-status.txt].each do |name|
+        raise "Required metadata ignored: #{id}/#{name}" unless staged.include?("#{@batch}/#{id}/#{name}")
+      end
+    end
+    git("commit", "--quiet", "-m", "Retain original Opus 5.5 medium outputs (#{@ids.size} production observations)")
+    json("completion.json", { "completed_at" => Time.now.utc.iso8601, "campaign_id" => @batch,
+      "observations" => @ids.size, "source_commit" => git("rev-parse", "HEAD").strip,
+      "next_stage" => "Validation, timing review/correction, then established-size benchmarking. No evaluation was started by this controller." })
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  $stdout.sync = true
+  $stderr.sync = true
+  command, root = ARGV
+  abort "usage: generation_campaign.rb gate|run|status CAMPAIGN_ROOT" unless %w[gate run status].include?(command) && root
+  GenerationCampaign.new(root).public_send(command)
+end

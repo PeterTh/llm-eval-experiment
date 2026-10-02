@@ -2,6 +2,7 @@ require "json"
 require "time"
 
 require_relative "general"
+require_relative "lib/experiment_selection"
 
 # General configuration / information
 
@@ -54,6 +55,7 @@ MODELS = {"claude-sonnet-4.5":1,
           "gpt-6-astra-medium":0,
           "claude-fable-5-cc-medium":0,
           "claude-opus-5-cc-medium":0,
+          "claude-opus-5.5-cc-medium":0,
           "claude-sonnet-5-cc-medium":0,
         }
 
@@ -75,6 +77,7 @@ MODEL_MAPPING = {
     "gpt-6-astra-medium" => "gpt-6-astra",
     "claude-fable-5-cc-medium" => "claude-fable-5",
     "claude-opus-5-cc-medium" => "claude-opus-5",
+    "claude-opus-5.5-cc-medium" => "claude-opus-5-5",
     "claude-sonnet-5-cc-medium" => "claude-sonnet-5",
 }
 
@@ -93,6 +96,7 @@ REASONING_MAPPING = {
     "gpt-6-astra-medium" => "medium",
     "claude-fable-5-cc-medium" => "medium",
     "claude-opus-5-cc-medium" => "medium",
+    "claude-opus-5.5-cc-medium" => "medium",
     "claude-sonnet-5-cc-medium" => "medium",
 }
 
@@ -112,11 +116,11 @@ PARAMS_CODEX = '--dangerously-bypass-approvals-and-sandbox --disable apps --disa
 #
 # Disallowed tools, and the codex --disable flag each one corresponds to:
 #   WebSearch, WebFetch                      browser_use*, computer_use, in_app_browser
-#   Task, Workflow                            multi_agent, multi_agent_v2
+#   Agent (also called Task), Workflow       multi_agent, multi_agent_v2
 #   CronCreate, CronDelete, CronList          (no counterpart; they would outlive the run)
 #   ScheduleWakeup, RemoteTrigger             (no counterpart; scheduling and external triggers)
 # ListAgents, SendMessage, TaskOutput and TaskStop are left alone: they are inert with no subagents.
-CLAUDE_DISALLOWED_TOOLS = %w[WebSearch WebFetch Task Workflow
+CLAUDE_DISALLOWED_TOOLS = %w[WebSearch WebFetch Agent Task Workflow
                              CronCreate CronDelete CronList ScheduleWakeup RemoteTrigger]
 
 PARAMS_CLAUDE = "--print --setting-sources \"\" --strict-mcp-config --no-session-persistence " \
@@ -156,7 +160,7 @@ COMMON_SOURCE = "common"
 
 CLAUDE_HOME = "/home/#{EVAL_USER}/.claude"
 CLAUDE_CREDENTIALS = File.join(CLAUDE_HOME, ".credentials.json")
-CLAUDE_BINARY = "/home/#{EVAL_USER}/.local/bin/claude"
+CLAUDE_BINARY = ENV.fetch("LLM_EVAL_CLAUDE_BINARY", "/home/#{EVAL_USER}/.local/bin/claude")
 # work that has to run as the eval user: reading its 0600 config, and deleting files it created in
 # sticky world-writable directories
 EVAL_SUPPORT_SCRIPT = File.expand_path("eval_user_support.rb", __dir__)
@@ -184,6 +188,7 @@ TESTING = ARGV.include?("--production") ? false : true
 DO_RUN = ARGV.include?("--run")
 # syntax is --continue=timestamp, e.g. --continue=20240601-120000
 CONTINUE_FROM = ARGV.find { |arg| arg.start_with?("--continue=") }&.split("=")&.last
+RUN_IDS_FILE = ARGV.find { |arg| arg.start_with?("--run-ids=") }&.split("=", 2)&.last
 
 if ARGV.include?("--help") || ARGV.include?("-h")
     puts "Usage: ruby experiment.rb [options]"
@@ -191,6 +196,7 @@ if ARGV.include?("--help") || ARGV.include?("-h")
     puts "  --production           Run the full experiment with all configurations (default is testing mode with limited configurations)"
     puts "  --smoke                Smoke test a harness: one benchmark, one parallelization type, one run per model, shorter timeout"
     puts "  --continue=TIMESTAMP   Continue an existing experiment from the given timestamp (format: YYYYMMDD-HHMMSS)"
+    puts "  --run-ids=PATH         Select exact IDs (one per line) without changing the mode or per-run budget"
     puts "  --run                  Actually run the experiments (without this flag, the script will only print the planned experiments and estimated time/cost)"
     exit
 end
@@ -202,19 +208,19 @@ puts "Running in #{SMOKE ? "smoke test" : (TESTING ? "testing" : "production")} 
 
 #HARNESS = :copilot
 #HARNESS = :pi
-HARNESS = :codex
-#HARNESS = :claude
+#HARNESS = :codex
+HARNESS = :claude
 
 if SMOKE
     # Enough to verify a harness end to end (agent edits the sources, transcript is well formed,
     # state reset and usage preflight behave) without spending a campaign's worth of quota.
     BENCHMARKS_TO_EVAL = ["black-scholes"]
-    MODELS_TO_EVAL = ["gpt-6-sol-medium", "gpt-6-luna-medium", "gpt-6-astra-medium"]
+    MODELS_TO_EVAL = ["claude-opus-5.5-cc-medium"]
     PAR_TYPES_TO_EVAL = [PAR_OMP]
     NUM_RUNS = 1
 elsif TESTING
     BENCHMARKS_TO_EVAL = BENCHMARKS # ["black-scholes", "nbody"]
-    MODELS_TO_EVAL = ["gpt-5-mini", "gpt-4.1"]
+    MODELS_TO_EVAL = ["claude-opus-5.5-cc-medium"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 else
@@ -223,7 +229,7 @@ else
     #MODELS_TO_EVAL = ["gpt-5.6-luna-xhigh", "gpt-5.6-luna-medium", "gpt-5.6-luna-low",
     #                  "gpt-5.6-terra-xhigh", "gpt-5.6-terra-medium", "gpt-5.6-terra-low",
     #                  "gpt-5.6-sol-xhigh", "gpt-5.6-sol-medium", "gpt-5.6-sol-low"]
-    MODELS_TO_EVAL = ["gpt-6-sol-medium", "gpt-6-luna-medium", "gpt-6-astra-medium"]
+    MODELS_TO_EVAL = ["claude-opus-5.5-cc-medium"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 end
@@ -232,11 +238,15 @@ MAX_TIME_SECONDS = SMOKE ? 30 * 60 : 4 * 60 * 60 # after this time we consider a
 
 # Pre-experiment ##############################################################################################################################################
 
-experiments_per_model = BENCHMARKS_TO_EVAL.size * PAR_TYPES_TO_EVAL.size * NUM_RUNS
-$total_experiments = experiments_per_model * MODELS_TO_EVAL.size
+EXPERIMENT_CONFIGURATIONS = ExperimentSelection.select(
+    ExperimentSelection.configurations(benchmarks: BENCHMARKS_TO_EVAL, models: MODELS_TO_EVAL,
+                                       backends: PAR_TYPES_TO_EVAL, repetitions: NUM_RUNS),
+    path: RUN_IDS_FILE
+)
+$total_experiments = EXPERIMENT_CONFIGURATIONS.size
 
 puts "Total number of experiments to run: #{$total_experiments}"
-total_cost = MODELS_TO_EVAL.map { |model| MODELS[model.to_sym] }.sum * BASE_COST_PER_REQUEST * experiments_per_model
+total_cost = EXPERIMENT_CONFIGURATIONS.sum { |_, model, _, _| MODELS.fetch(model.to_sym) } * BASE_COST_PER_REQUEST
 puts "Estimated total cost of the experiment: #{total_cost.round(2)} USD"
 
 TIMESTAMP = CONTINUE_FROM || Time.now.strftime("%Y%m%d-%H%M%S")
@@ -279,7 +289,7 @@ end
 # effort is fetched rather than defaulted: it is part of the model id, so a missing REASONING_MAPPING
 # entry would silently mislabel the run, and --effort only warns on an unknown value.
 def claude_command(command_prefix, actual_model_id, effort, instruction)
-    "#{command_prefix} env #{ENV_CLAUDE} claude #{PARAMS_CLAUDE} " \
+    "#{command_prefix} env #{ENV_CLAUDE} \"#{CLAUDE_BINARY}\" #{PARAMS_CLAUDE} " \
     "--model #{actual_model_id} --effort #{effort} " \
     "\"#{instruction}\" > output.txt 2>&1"
 end
@@ -490,12 +500,9 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
 
     # if we have a timing file for this run already, skip it (for continuing existing runs)
     bench_path = File.join(EVAL_TARGET_DIR, id)
-    if File.exist?(File.join(bench_path, "timing.txt"))
+    if (duration = ExperimentSelection.completed_duration(bench_path))
         puts " - Timing file already exists, skipping run"
         # read and update $times for better estimation of remaining time
-        timing_content = File.read(File.join(bench_path, "timing.txt"))
-        duration_line = timing_content.split("\n").find { |line| line.start_with?("Duration:") }
-        duration = duration_line.split(" ")[1].to_f
         $times << duration
         return
     end
@@ -520,6 +527,7 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
 
     bench_path = prepare_folder(benchmark, model, par_type, run)
     instruction = build_instruction(benchmark, par_type)
+    agent_status = nil
     Dir.chdir(bench_path) do
         # give the eval user access to the folder and its contents
         FileUtils.chmod_R(0777, ".")
@@ -540,12 +548,17 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
             command = "#{command_prefix} copilot #{PARAMS} --model #{actual_model_id} -p \"#{instruction}\" > output.txt 2>&1"
         end
         output = system("su - #{EVAL_USER} --shell=/bin/bash -c '#{command}'")
+        agent_status = $?
         # write instructions to file for later analysis
         File.write(File.join(bench_path, "instruction.txt"), instruction)
     end
 
     end_time = Time.now
     duration = end_time - start_time
+    File.write(File.join(bench_path, "process-status.txt"), JSON.pretty_generate({
+        "exit_status" => agent_status&.exitstatus, "term_signal" => agent_status&.termsig,
+        "success" => agent_status&.success?, "timeout_seconds" => MAX_TIME_SECONDS
+    }) + "\n")
 
     if HARNESS == :claude
         record = claude_result_record(File.join(bench_path, "output.txt"))
@@ -708,29 +721,22 @@ elsif HARNESS == :claude
         exit 1
     end
     # print the invocation that will actually be used, so it can be reviewed before a campaign
-    example_benchmark = BENCHMARKS_TO_EVAL.first
-    example_par_type = PAR_TYPES_TO_EVAL.first
-    example_id = run_id_string(example_benchmark, MODELS_TO_EVAL.first, example_par_type, 1)
+    example_benchmark, example_model, example_par_type, example_repetition = EXPERIMENT_CONFIGURATIONS.first
+    example_id = run_id_string(example_benchmark, example_model, example_par_type, example_repetition)
     example_prefix = "cd #{File.join(EVAL_DIR, example_id)}; timeout --kill-after=30s #{MAX_TIME_SECONDS}s"
     puts "Command for #{example_id}:"
     puts "  su - #{EVAL_USER} --shell=/bin/bash -c '#{claude_command(
         example_prefix,
-        MODEL_MAPPING.fetch(MODELS_TO_EVAL.first, MODELS_TO_EVAL.first),
-        REASONING_MAPPING.fetch(MODELS_TO_EVAL.first),
+        MODEL_MAPPING.fetch(example_model, example_model),
+        REASONING_MAPPING.fetch(example_model),
         build_instruction(example_benchmark, example_par_type)
     )}'"
     puts "Per-run wall clock limit: #{MAX_TIME_SECONDS / 60} minutes"
     puts "Results are moved to #{EVAL_TARGET_DIR} (Dir.home is #{Dir.home})"
 end
 
-NUM_RUNS.times do |run|
-    PAR_TYPES_TO_EVAL.each do |par_type|
-        MODELS_TO_EVAL.each do |model|
-            BENCHMARKS_TO_EVAL.each do |benchmark|
-                eval_config(benchmark, model, par_type, run+1)
-            end
-        end
-    end
+EXPERIMENT_CONFIGURATIONS.each do |benchmark, model, par_type, repetition|
+    eval_config(benchmark, model, par_type, repetition)
 end
 
 if !DO_RUN

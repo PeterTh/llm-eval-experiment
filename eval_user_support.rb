@@ -24,7 +24,7 @@ CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 # Everything under the Claude Code config directory that can carry state between invocations.
 # Deliberately keeps .credentials.json (auth), settings.json, policy-limits.json,
 # remote-settings.json, plugins/ (read-only marketplace metadata) and cache/.
-CLAUDE_STATE_PATHS = %w[projects sessions todos shell-snapshots statsig memory backups
+CLAUDE_STATE_PATHS = %w[projects sessions session-env todos shell-snapshots statsig memory backups
                         CLAUDE.md history.jsonl]
 
 # Shared scratch directories an agent can write to from any working directory. These are the

@@ -72,6 +72,24 @@ without Slurm.
 
 ## Script Descriptions
 
+### Reusable generation preflight
+
+For a production-budget preflight, put one or more exact run IDs in a text file,
+one per line, and use the same batch timestamp for preflight and continuation:
+
+```bash
+ruby experiment.rb --production --run --continue=TIMESTAMP --run-ids=/path/to/preflight-ids.txt
+ruby experiment.rb --production --run --continue=TIMESTAMP
+```
+
+Selection preserves the configured execution order, prompts and per-run budget.
+Unknown, duplicate or empty selections fail before generation. Completed IDs retain
+their outputs and are skipped on continuation. Do not use `--smoke` for a reusable
+production preflight: it uses a shorter timeout. Freeze the launch scripts and
+source revision, and set `LLM_EVAL_CLAUDE_BINARY` to a versioned executable when
+pinning Claude Code. Keep persistent campaign records under home, temporary work
+on local storage, and the `llmtest` account free of unrelated sessions during runs.
+
 ### Main Pipeline (in execution order)
 
 | Script | Description |

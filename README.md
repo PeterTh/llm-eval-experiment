@@ -101,6 +101,13 @@ accounting and completion records between runs. An anomaly or a `STOP` file in
 the campaign directory stops further launches; it does not regenerate completed
 work. Genuine full-budget timeouts are retained as observations.
 
+After each harness invocation, the supervisor verifies that the reserved evaluation
+account has no processes left. Any survivors are sent SIGKILL as that account,
+with at most two seconds of polling for their disappearance. An already-empty
+account incurs no wait. Persistent processes (including zombies) stop the campaign
+with PID/state diagnostics. This cleanup runs outside generation timing and is
+recorded under `cleanup/`; the pre-launch idle check never kills unrelated sessions.
+
 The supervisor writes progress and per-observation records under the campaign
 directory. `status` records the generation service's state and can be scheduled
 about every four hours. After generation it commits only the new batch in the

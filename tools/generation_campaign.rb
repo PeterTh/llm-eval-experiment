@@ -4,6 +4,7 @@ require "fileutils"
 require "open3"
 require "time"
 require_relative "../lib/claude_generation_observation"
+require_relative "../lib/generation_cleanup"
 
 # Serial orchestration around experiment.rb, not a replacement generation harness.
 # Checks run only between observations; no compilation, validation or performance runs.
@@ -18,6 +19,7 @@ class GenerationCampaign
     @results = @manifest.fetch("persistent_results")
     @observations = File.join(@root, "observations")
     FileUtils.mkdir_p(@observations)
+    FileUtils.mkdir_p(File.join(@root, "cleanup"))
   end
 
   def json(name, value)
@@ -101,7 +103,9 @@ class GenerationCampaign
       command = ["/usr/bin/ruby", File.join(@manifest.fetch("runtime_root"), "run.rb"), "--production", "--run",
         "--continue=#{@batch}", "--run-ids=#{ids_path}"]
       puts "Launching #{id} at #{Time.now.utc.iso8601}"
-      raise "Harness exited unsuccessfully for #{id}" unless launch(command)
+      success = launch(command)
+      cleanup_after_run!(id)
+      raise "Harness exited unsuccessfully for #{id}" unless success
       observation(id, baseline: baseline)
       snapshot("running")
     end
@@ -117,9 +121,14 @@ class GenerationCampaign
   end
 
   def ensure_account_idle!
-    pids, result = Open3.capture2("pgrep", "-u", "llmtest")
-    raise "Cannot determine whether llmtest is idle" unless [0, 1].include?(result.exitstatus)
-    raise "llmtest has an unrelated process; refusing cleanup" unless result.exitstatus == 1 && pids.strip.empty?
+    pids = GenerationCleanup.new.pids
+    raise "llmtest is not idle (PIDs #{pids.join(', ')}); refusing launch" unless pids.empty?
+  end
+
+  def cleanup_after_run!(id)
+    report = GenerationCleanup.new.verify!
+    json("cleanup/#{id}.json", report.merge("id" => id, "checked_at" => Time.now.utc.iso8601))
+    puts "Verified post-run cleanup for #{id}: #{JSON.generate(report)}" unless report.fetch("signal_attempts").empty?
   end
 
   def launch(command)

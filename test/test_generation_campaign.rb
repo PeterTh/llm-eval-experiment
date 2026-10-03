@@ -5,14 +5,18 @@ require_relative "../tools/generation_campaign"
 class GenerationCampaignTest < Minitest::Test
   class SimulatedCampaign < GenerationCampaign
     attr_accessor :produce, :git_responses
-    attr_reader :launched, :committed, :git_calls
+    attr_reader :launched, :committed, :git_calls, :cleaned
 
     def initialize(root)
       super
-      @launched, @git_calls, @git_responses = [], [], {}
+      @launched, @git_calls, @git_responses, @cleaned = [], [], {}, []
     end
 
     def ensure_account_idle!; end
+
+    def cleanup_after_run!(id)
+      @cleaned << id
+    end
 
     def launch(command)
       @launched << command
@@ -82,6 +86,7 @@ class GenerationCampaignTest < Minitest::Test
     original = Dir[File.join(directory, "*")].to_h { |p| [p, File.binread(p)] }
     capture_io { @campaign.run }
     assert_equal 2, @campaign.launched.size
+    assert_equal @ids.drop(1), @campaign.cleaned
     assert @campaign.launched.all? { |args| args.include?("--production") && args.include?("--continue=#{@batch}") }
     original.each { |path, bytes| assert_equal bytes, File.binread(path) }
     assert @campaign.committed
@@ -94,6 +99,7 @@ class GenerationCampaignTest < Minitest::Test
     @campaign.produce = ->(id) { record(id, model: "other-model") }
     capture_io { assert_raises(ClaudeGenerationObservation::Invalid) { @campaign.run } }
     assert_equal 1, @campaign.launched.size
+    assert_equal [@ids[1]], @campaign.cleaned
     assert_nil @campaign.committed
     assert_equal "needs_review", progress.fetch("status")
     assert_equal 1, progress.fetch("completed")
@@ -110,6 +116,35 @@ class GenerationCampaignTest < Minitest::Test
     capture_io { assert_raises(RuntimeError) { @campaign.run } }
     assert_match "Completed observation changed", progress.fetch("error")
     assert_empty @campaign.launched
+  end
+
+  def test_cleanup_failure_preserves_output_and_prevents_next_launch
+    gate
+    @campaign.define_singleton_method(:cleanup_after_run!) { |_id| raise "Post-run cleanup exceeded 2.0s" }
+    capture_io { assert_raises(RuntimeError) { @campaign.run } }
+    assert_equal 1, @campaign.launched.size
+    assert_equal "needs_review", progress.fetch("status")
+    assert File.file?(File.join(@results, @ids[1], "timing.txt"))
+    refute Dir.exist?(File.join(@results, @ids[2]))
+    assert_nil @campaign.committed
+  end
+
+  def test_cleanup_is_verified_even_when_the_harness_returns_failure
+    gate
+    @campaign.define_singleton_method(:launch) { |command| @launched << command; false }
+    capture_io { assert_raises(RuntimeError) { @campaign.run } }
+    assert_equal [@ids[1]], @campaign.cleaned
+    assert_equal 1, @campaign.launched.size
+    assert_equal "needs_review", progress.fetch("status")
+    assert_nil @campaign.committed
+  end
+
+  def test_busy_account_before_launch_is_not_cleaned
+    gate
+    @campaign.define_singleton_method(:ensure_account_idle!) { raise "Account busy" }
+    capture_io { assert_raises(RuntimeError) { @campaign.run } }
+    assert_empty @campaign.launched
+    assert_empty @campaign.cleaned
   end
 
   def test_another_controller_does_not_overwrite_progress

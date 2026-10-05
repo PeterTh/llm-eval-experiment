@@ -101,6 +101,12 @@ accounting and completion records between runs. An anomaly or a `STOP` file in
 the campaign directory stops further launches; it does not regenerate completed
 work. Genuine full-budget timeouts are retained as observations.
 
+An identical same-session initialization repeated after a background-task
+notification is accepted only when the follow-up result identifies that origin
+and its token/API counters remain cumulative. The final cumulative totals are
+counted once. Changed identities/capabilities or unexplained reinitialization
+still stop the campaign; original transcripts are never rewritten.
+
 After each harness invocation, the supervisor verifies that the reserved evaluation
 account has no processes left. Any survivors are sent SIGKILL as that account,
 with at most two seconds of polling for their disappearance. An already-empty

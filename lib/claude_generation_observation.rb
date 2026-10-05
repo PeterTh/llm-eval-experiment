@@ -19,15 +19,31 @@ module ClaudeGenerationObservation
     process = JSON.parse(File.read(paths.fetch("process-status.txt")))
     raise Invalid, "Generation budget differs" unless process.fetch("timeout_seconds") == timeout_seconds
     init, result = nil, nil
+    notification_seen, notification_result_pending = false, false
     assistant_models, calls, retries, seen = [], [], [], {}
     File.foreach(paths.fetch("output.txt")) do |line|
       event = JSON.parse(line) rescue next
       next unless event.is_a?(Hash)
       if event["type"] == "system" && event["subtype"] == "init"
-        raise Invalid, "Multiple session initializations" if init
-        init = event
+        if init
+          same = event.reject { |key, _| key == "uuid" } == init.reject { |key, _| key == "uuid" }
+          raise Invalid, "Session initialization changed" unless same
+          unless result && notification_seen && !notification_result_pending
+            raise Invalid, "Repeated initialization without a completed-turn task notification"
+          end
+          notification_result_pending = true
+        else
+          init = event
+        end
+      elsif event["type"] == "system" && event["subtype"] == "task_notification"
+        notification_seen = true if result && event["session_id"] == init&.fetch("session_id")
       elsif event["type"] == "result"
+        if notification_result_pending
+          verify_notification_continuation!(result, event, model: model, session: init.fetch("session_id"))
+          notification_result_pending = false
+        end
         result = event
+        notification_seen = false
       elsif event["type"] == "assistant"
         observed = event.dig("message", "model")
         assistant_models << observed if observed && observed != "<synthetic>"
@@ -38,6 +54,7 @@ module ClaudeGenerationObservation
         retries << event
       end
     end
+    raise Invalid, "Incomplete task-notification continuation" if notification_result_pending
     raise Invalid, "Missing session initialization" unless init
     raise Invalid, "Wrong generation model" unless init["model"] == model && (assistant_models.uniq - [model]).empty?
     raise Invalid, "Claude version changed" unless init["claude_code_version"] == version
@@ -96,5 +113,34 @@ module ClaudeGenerationObservation
       "reported_cost_usd" => result["total_cost_usd"])
   rescue KeyError, JSON::ParserError, ArgumentError => e
     raise Invalid, e.message
+  end
+
+  # Claude Code may re-emit init in the same process after a background shell
+  # finishes, then emit another result. modelUsage and API time remain cumulative;
+  # use the final totals once, never sum the result snapshots or take turn usage.
+  def verify_notification_continuation!(previous, current, model:, session:)
+    unless current.dig("origin", "kind") == "task-notification" && current.dig("origin", "producer") == "session-task"
+      raise Invalid, "Repeated initialization is not a task-notification continuation"
+    end
+    [previous, current].each do |record|
+      raise Invalid, "Continuation session changed" unless record["session_id"] == session
+      raise Invalid, "Continuation contains a terminal error" unless record["subtype"] == "success" && record["is_error"] == false
+      raise Invalid, "Continuation model changed" unless record.fetch("modelUsage").keys == [model]
+      raise Invalid, "Continuation spawned subagents" unless record.fetch("subagent_stats", {}).fetch("spawned", 0) == 0
+      raise Invalid, "Continuation used server-side web search" unless record.fetch("modelUsage").fetch(model).fetch("webSearchRequests", 0) == 0
+      server_tools = record.fetch("usage", {}).fetch("server_tool_use", {})
+      raise Invalid, "Continuation used server-side web tools" unless server_tools.values.all? { |n| n == 0 }
+    end
+    COUNTERS.each_value do |key|
+      before = previous.fetch("modelUsage").fetch(model).fetch(key)
+      after = current.fetch("modelUsage").fetch(model).fetch(key)
+      unless before.is_a?(Integer) && before >= 0 && after.is_a?(Integer) && after >= before
+        raise Invalid, "Continuation token counters are not cumulative: #{key}"
+      end
+    end
+    before, after = [previous, current].map { |r| r.fetch("duration_api_ms") }
+    unless [before, after].all? { |n| n.is_a?(Numeric) && n.finite? && n >= 0 } && after >= before
+      raise Invalid, "Continuation API duration is not cumulative"
+    end
   end
 end

@@ -84,4 +84,63 @@ class ClaudeGenerationObservationTest < Minitest::Test
     @result["modelUsage"][@model]["inputTokens"] = -1
     assert_raises(ClaudeGenerationObservation::Invalid) { read }
   end
+
+  def notification_continuation
+    first_result = JSON.parse(JSON.generate(@result))
+    @result["origin"] = { "kind" => "task-notification", "producer" => "session-task" }
+    @result["duration_api_ms"] += 400
+    @result["modelUsage"][@model]["outputTokens"] += 7
+    @result["usage"] = { "output_tokens" => 7 } # Per-turn usage is not the cumulative total.
+    repeated_init = JSON.parse(JSON.generate(@init)).merge("uuid" => "new-event-uuid")
+    notification = { "type" => "system", "subtype" => "task_notification", "session_id" => "session", "task_id" => "background-shell" }
+    @events = [@init, first_result, notification, repeated_init, @result]
+  end
+
+  def test_same_session_background_notification_uses_final_cumulative_totals_once
+    notification_continuation
+    report = read
+    assert_equal "completed", report.fetch("outcome")
+    assert_equal 107, report.fetch("total_tokens")
+    assert_equal 27, report.fetch("token_counts").fetch("output_tokens")
+    assert_equal 10.4, report.fetch("api_seconds")
+    assert_equal 12.34, report.fetch("total_seconds")
+  end
+
+  def test_repeated_initialization_still_rejects_identity_or_capability_changes
+    %w[session_id model cwd tools].each do |key|
+      @events = [@init, @result]
+      notification_continuation
+      @events[3][key] = key == "tools" ? ["Bash", "Read", "NewTool"] : "changed"
+      assert_raises(ClaudeGenerationObservation::Invalid) { read }
+    end
+  end
+
+  def test_repeated_initialization_requires_same_session_notification_and_origin
+    notification_continuation
+    @events[2]["session_id"] = "other-session"
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+    @events[2]["session_id"] = "session"
+    @result.delete("origin")
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+    @events.delete_at(2)
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+  end
+
+  def test_continuation_cannot_reset_counters_or_hide_a_previous_terminal_error
+    notification_continuation
+    @result["modelUsage"][@model]["outputTokens"] = 7
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+    @result["modelUsage"][@model]["outputTokens"] = 27
+    @result["duration_api_ms"] = 400
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+    @result["duration_api_ms"] = 10400
+    @events[1]["is_error"] = true
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+  end
+
+  def test_notification_continuation_requires_its_own_terminal_record
+    notification_continuation
+    @events.pop
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+  end
 end

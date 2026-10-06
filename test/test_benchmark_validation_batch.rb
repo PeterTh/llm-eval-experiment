@@ -4,6 +4,33 @@ require "minitest/autorun"
 require_relative "../tools/timing_audit/bin/benchmark_validation_batch"
 
 class BenchmarkValidationBatchTest < Minitest::Test
+  def test_canaries_preserve_first_repetition_when_it_is_eligible
+    ids = LocalEvaluation::PAR_TYPES.flat_map { |backend|
+      [2, 1].map { |run| "black-scholes_test_#{backend}_r#{run}" }
+    }
+    assert_equal LocalEvaluation::PAR_TYPES.map { |backend| "black-scholes_test_#{backend}_r1" },
+      BenchmarkValidationBatch.canary_ids(ids, "test")
+  end
+
+  def test_canaries_select_first_unchanged_valid_repetition_per_backend
+    ids = LocalEvaluation::PAR_TYPES.map { |backend| "black-scholes_test_#{backend}_r1" }
+    ids.delete("black-scholes_test_hybrid_r1")
+    ids.concat(%w[black-scholes_test_hybrid_r10 black-scholes_test_hybrid_r3
+      black-scholes_another_hybrid_r1 matmul_test_hybrid_r1])
+    selected = BenchmarkValidationBatch.canary_ids(ids.reverse, "test")
+    assert_includes selected, "black-scholes_test_hybrid_r3"
+    assert_equal 4, selected.size
+    assert_equal 4, selected.uniq.size
+    refute_includes selected, "black-scholes_test_hybrid_r1"
+  end
+
+  def test_canaries_cannot_fall_back_to_another_model_or_benchmark
+    ids = LocalEvaluation::PAR_TYPES.map { |backend| "black-scholes_test_#{backend}_r1" }
+    ids.delete("black-scholes_test_hybrid_r1")
+    ids.concat(%w[black-scholes_another_hybrid_r1 matmul_test_hybrid_r1])
+    assert_raises(RuntimeError) { BenchmarkValidationBatch.canary_ids(ids, "test") }
+  end
+
   def test_inheritance_changes_only_binding_and_not_measurement_settings
     original = { "state" => "frozen", "frozen_at" => "old", "proposed_sha256" => "old",
       "cells" => { "hybrid" => { "floydwarshall" => { "args" => ["-n", "10240"], "timeout_seconds" => 47 } } },

@@ -226,6 +226,10 @@ ruby tools/timing_audit/bin/benchmark_validation_batch.rb status \
 
 Resolve conditional audit findings against the inherited sizes before launch.
 Canaries use the same warm-up and five repetitions and are retained, not repeated.
+For each backend, preparation selects the lowest-numbered unchanged, validation-passing
+Black–Scholes repetition of the requested canary model. This retains repetition 1
+when eligible and allows a later repetition when earlier ones need timing corrections;
+the exact four IDs are frozen in the campaign before any measurement.
 The runner first benchmarks unchanged valid programs from their validation builds,
 then guards those records before advancing the isolated source checkout to the
 accepted correction commit. The existing immutable source-correction amendment

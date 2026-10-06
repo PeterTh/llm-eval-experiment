@@ -80,6 +80,19 @@ module BenchmarkValidationBatch
     { valid: valid, corrected: corrected, unchanged: valid - corrected }
   end
 
+  def canary_ids(unchanged_ids, model)
+    LocalEvaluation::PAR_TYPES.map do |backend|
+      pattern = /\Ablack-scholes_#{Regexp.escape(model)}_#{backend}_r([1-9]\d*)\z/
+      candidates = unchanged_ids.filter_map do |id|
+        match = pattern.match(id)
+        [match[1].to_i, id] if match
+      end
+      selected = candidates.min_by(&:first)
+      raise "No unchanged valid black-scholes canary for #{model}/#{backend}" unless selected
+      selected.last
+    end
+  end
+
   def inherited_config(baseline, manifest_sha:, validation_sha:, count:, seed_path:, baseline_path:, baseline_sha:)
     config = Marshal.load(Marshal.dump(baseline))
     config.delete("frozen_at")
@@ -164,7 +177,7 @@ module BenchmarkValidationBatch
     original_only.each do |id|
       LocalEvaluation::BuildSupport.find_executable(File.join(run_dir, "validation", id), manifest.runs.fetch(id).fetch("benchmark"))
     end
-    canaries = LocalEvaluation::PAR_TYPES.map { |backend| "black-scholes_#{canary_model}_#{backend}_r1" }
+    canaries = canary_ids(original_only, canary_model)
     raise "Canaries must all be unchanged valid programs" unless (canaries - original_only).empty?
     FileUtils.mkdir_p(campaign)
     seed = LocalEvaluation::CalibrationSeed.materialize!(run_dir: run_dir, source_path: baseline.data.fetch("seed_path"))

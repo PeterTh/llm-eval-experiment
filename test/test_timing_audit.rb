@@ -210,6 +210,10 @@ class TimingAuditTest < Minitest::Test
       result["confidence"] = "medium"
       write_audit_attempt(primary, record, result)
       assert TimingAudit::AuditVerifier.new(primary, "trial").run
+      summary_path = File.join(primary, "summary-full.jsonl")
+      write(summary_path, "frozen summary\n")
+      assert TimingAudit::AuditVerifier.new(primary, "full").run(write_summary: false)
+      assert_equal "frozen summary\n", File.read(summary_path)
       assert TimingAudit::AuditVerifier.new(primary, "full").run
       TimingPriorityReview.prepare(main_root: primary, output_dir: priority)
       assert_equal 1, TimingAudit.load_jsonl(File.join(priority, "inventory.jsonl")).size

@@ -185,7 +185,7 @@ module TimingCorrectionExport
       "originals_preserved_in_git" => true, "correction_manifest_sha256" => TimingAudit.sha256_file(manifest_path) }
     TimingAudit.atomic_write(File.join(output, "summary.json"), JSON.pretty_generate(summary) + "\n")
     TimingAudit.atomic_write(File.join(output, "README.md"), <<~README)
-      # Timing-only corrections: batch 20260901-162328
+      # Timing-only corrections: #{validation_manifest.data.fetch("batches").join(", ")}
 
       #{records.size} accepted corrections; all #{validation_results.size} corrected programs passed
       the unchanged five-stage validation. No performance benchmark was run.

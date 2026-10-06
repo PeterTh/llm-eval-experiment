@@ -67,7 +67,7 @@ module ValidationAuditExport
     { "primary" => primary, "priority" => priority, "adjudication" => adjudication, "supplemental" => supplemental,
       "pilot-adjudication" => pilot_adjudication, "pilot-review" => pilot_review }.each do |label, root|
       next unless root
-      TimingAudit::AuditVerifier.new(root, "full").run
+      TimingAudit::AuditVerifier.new(root, "full").run(write_summary: false)
       selected = TimingAudit.load_jsonl(File.join(root, "inventory.jsonl"))
       audit_counts[label] = selected.size
       %w[manifest.yaml inventory.jsonl excluded.jsonl trial-ids.txt priority-selection.jsonl priority-ids.txt

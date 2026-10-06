@@ -911,7 +911,7 @@ module TimingAudit
       @validator = ResultValidator.new(@records)
     end
 
-    def run
+    def run(write_summary: true)
       ids = if @scope == "trial"
         File.readlines(File.join(@output_dir, "trial-ids.txt"), chomp: true).reject(&:empty?)
       else
@@ -924,7 +924,7 @@ module TimingAudit
         verify_result!(id, result)
         result
       end
-      write_summary(results)
+      write_summary(results) if write_summary
       counts = results.group_by { |result| result.fetch("verdict") }.transform_values(&:size)
       puts "Verified #{@scope} timing audit: #{results.size} records (#{VERDICTS.map { |v| "#{v}=#{counts.fetch(v, 0)}" }.join(', ')})"
       if @scope == "trial"

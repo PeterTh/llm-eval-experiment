@@ -210,9 +210,12 @@ module QtclusteringBoundary
 
   class Builder
     def initialize(release_root:, validation_runs:, source_root:, source_commit:,
-                   reference_root:, reference_commit:, benchmark_config:, context_path:, output_dir:, trial_size: 16)
+                   reference_root:, reference_commit:, benchmark_config:, context_path:, output_dir:, trial_size: 16,
+                   include_release: true)
       @release = File.realpath(release_root)
       @validations = validation_runs.map { |path| File.realpath(path) }
+      @include_release = include_release
+      raise "Validation-only selection requires a validation run" if !@include_release && @validations.empty?
       @source = TimingAudit::SourceRepository.new(root: source_root, commit: source_commit)
       @reference_root = File.realpath(reference_root)
       @reference_commit = reference_commit
@@ -227,7 +230,7 @@ module QtclusteringBoundary
 
     def run
       raise "Output already exists: #{@output}" if File.exist?(@output)
-      records = release_records + @validations.flat_map { |path| validation_records(path) }
+      records = (@include_release ? release_records : []) + @validations.flat_map { |path| validation_records(path) }
       records.sort_by! { |row| row.fetch("id") }
       raise "Empty or duplicate inventory" if records.empty? || records.map { |r| r.fetch("id") }.uniq.size != records.size
       records.each do |record|
@@ -241,6 +244,7 @@ module QtclusteringBoundary
       reference_metadata = { "commit" => @reference_commit, "path" => "qtclustering/qtclustering.cpp",
         "sha256" => TimingAudit.sha256_bytes(reference) }
       catalog_path = File.join(@release, "release/catalog.json")
+      @inputs << file_evidence(catalog_path)
       config_paths = [@config_path] + JSON.parse(File.read(catalog_path)).fetch("campaigns").map do |campaign|
         File.join(@release, campaign.fetch("benchmark_config"))
       end
@@ -280,6 +284,7 @@ module QtclusteringBoundary
         "dataset_sha256" => TimingAudit.sha256_file(File.join(@release, "release/scored_results.csv")),
         "selection" => { "basis" => "qtclustering_validation_boundary_review", "benchmark" => "qtclustering",
           "parallelization_types" => BACKENDS, "validation_status" => 5, "benchmark_success" => nil,
+          "include_release" => @include_release,
           "records" => records.size, "by_origin" => records.group_by { |r| r.fetch("origin") }.transform_values(&:size),
           "by_backend" => records.group_by { |r| r.fetch("par_type") }.transform_values(&:size) },
         "generated_source" => { "root" => @source.root, "commit" => @source.commit,

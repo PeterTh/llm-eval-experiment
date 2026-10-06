@@ -223,7 +223,9 @@ class TimingAuditTest < Minitest::Test
       assert TimingAudit::AuditVerifier.new(priority, "full").run
       context_path = File.join(root, "platform-context.txt")
       write(context_path, "Compile-only target ABI proof: chrono milliseconds rep is long.\n")
-      TimingPriorityReview.prepare_adjudication(main_root: primary, review_root: priority, output_dir: adjudication, context_path: context_path)
+      TimingPriorityReview.prepare_adjudication(main_root: primary, review_root: priority, output_dir: adjudication,
+        context_path: context_path, model: "gpt-6.1-sol")
+      assert_equal "gpt-6.1-sol", YAML.safe_load_file(File.join(adjudication, "manifest.yaml")).dig("blind_adjudication", "model")
       assert_equal 1, TimingAudit.load_jsonl(File.join(adjudication, "inventory.jsonl")).size
       assert_includes File.read(File.join(adjudication, "prompt-template.txt")), "Compile-only target ABI proof"
       assert_equal File.read(context_path), File.read(File.join(adjudication, "platform-context.txt"))
@@ -247,7 +249,8 @@ class TimingAuditTest < Minitest::Test
       selection_path = File.join(root, "supplemental-selection.jsonl")
       write(selection_path, TimingAudit.dump_jsonl([{ "program_id" => record.fetch("id"), "reason" => "Verified target profile needs an additional check" }]))
       TimingPriorityReview.prepare_supplemental(main_root: primary, output_dir: supplemental,
-        selection_path: selection_path, context_path: context_path)
+        selection_path: selection_path, context_path: context_path, model: "gpt-6.1-sol")
+      assert_equal "gpt-6.1-sol", YAML.safe_load_file(File.join(supplemental, "manifest.yaml")).dig("supplemental_adjudication", "model")
       refute_includes File.read(File.join(supplemental, "prompt-template.txt")), "Verified target profile needs an additional check"
       assert_raises(RuntimeError) do
         TimingFinalizeAudit.run(main_root: primary, priority_root: priority, adjudication_root: adjudication, supplemental_root: supplemental)

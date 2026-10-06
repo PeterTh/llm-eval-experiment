@@ -27,7 +27,7 @@ module TimingPriorityReview
   # A source-grounded final check may identify a missed platform assumption even
   # when earlier reviewers agreed. Preserve their results and freeze a separate,
   # explicitly selected blind adjudication rather than replacing any evidence.
-  def prepare_supplemental(main_root:, output_dir:, selection_path:, context_path:)
+  def prepare_supplemental(main_root:, output_dir:, selection_path:, context_path:, model: "gpt-5.6-sol")
     main_root = File.realpath(main_root)
     selection = TimingAudit.load_jsonl(selection_path)
     ids = selection.map { |row| row.fetch("program_id") }
@@ -38,7 +38,7 @@ module TimingPriorityReview
         "parent_root" => main_root,
         "parent_manifest_sha256" => TimingAudit.sha256_file(File.join(main_root, "manifest.yaml")),
         "selection_sha256" => TimingAudit.sha256_file(selection_path),
-        "model" => "gpt-5.6-sol", "effort" => "xhigh", "records" => ids.size
+        "model" => model, "effort" => "xhigh", "records" => ids.size
       }
     })
     TimingAudit.atomic_write(File.join(output_dir, "supplemental-selection.jsonl"), File.read(selection_path))
@@ -215,7 +215,7 @@ module TimingPriorityReview
     disagreements.each { |entry| puts "  #{entry.fetch('program_id')}" }
   end
 
-  def prepare_adjudication(main_root:, review_root:, output_dir:, context_path: nil)
+  def prepare_adjudication(main_root:, review_root:, output_dir:, context_path: nil, model: "gpt-5.6-sol")
     compare(main_root: main_root, review_root: review_root)
     comparison_path = File.join(review_root, "comparison.jsonl")
     ids = TimingAudit.load_jsonl(comparison_path).select { |row| row.fetch("adjudication_required") }
@@ -223,7 +223,7 @@ module TimingPriorityReview
     TimingAudit.derive_inventory(parent_root: main_root, output_dir: output_dir, ids: ids, provenance: {
       "blind_adjudication" => { "review_root" => File.realpath(review_root),
         "comparison_sha256" => TimingAudit.sha256_file(comparison_path),
-        "model" => "gpt-5.6-sol", "effort" => "xhigh", "records" => ids.size }
+        "model" => model, "effort" => "xhigh", "records" => ids.size }
     })
     add_equivalence_review_guidance(output_dir)
     add_platform_context(output_dir, context_path)
@@ -268,6 +268,7 @@ when "compare"
 when "prepare-adjudication"
   options = {}
   parser = OptionParser.new do |opts|
+    opts.on("--model=MODEL", "Record the adjudicator identity; use the same model when running") { |value| options[:model] = value }
     opts.on("--main=PATH") { |value| options[:main_root] = value }
     opts.on("--review=PATH") { |value| options[:review_root] = value }
     opts.on("--output=PATH") { |value| options[:output_dir] = File.expand_path(value) }
@@ -279,6 +280,7 @@ when "prepare-adjudication"
 when "prepare-supplemental"
   options = {}
   parser = OptionParser.new do |opts|
+    opts.on("--model=MODEL", "Record the adjudicator identity; use the same model when running") { |value| options[:model] = value }
     opts.on("--main=PATH") { |value| options[:main_root] = value }
     opts.on("--output=PATH") { |value| options[:output_dir] = File.expand_path(value) }
     opts.on("--selection=PATH") { |value| options[:selection_path] = File.expand_path(value) }

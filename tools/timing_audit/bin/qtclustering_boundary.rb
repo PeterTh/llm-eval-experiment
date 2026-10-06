@@ -13,6 +13,7 @@ when "prepare"
       opts.on("--#{name}=VALUE") { |value| options[name.tr("-", "_").to_sym] = value }
     end
     opts.on("--validation-run=PATH") { |value| options[:validation_runs] << value }
+    opts.on("--validation-only", "Select only the supplied validation runs; use the release for configuration context") { options[:include_release] = false }
     opts.on("--trial-size=N", Integer) { |value| options[:trial_size] = value }
   end
   parser.parse!(ARGV)

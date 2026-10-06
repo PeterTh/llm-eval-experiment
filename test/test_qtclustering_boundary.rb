@@ -44,6 +44,37 @@ class QtclusteringBoundaryTest < Minitest::Test
     end
   end
 
+  def test_validation_only_selects_new_observations_without_repeating_release
+    fixture do |args, ids|
+      validation = native_validation(args, ids)
+      args[:validation_runs] = [validation]
+      args[:include_release] = false
+      manifest = nil
+      capture_io { manifest = QtclusteringBoundary::Builder.new(**args).run }
+      records = TimingAudit.load_jsonl(File.join(args[:output_dir], "inventory.jsonl"))
+      assert_equal ids.first(4).sort, records.map { |record| record.fetch("id") }.sort
+      assert records.all? { |record| record.fetch("origin") == validation }
+      refute manifest.dig("selection", "include_release")
+      assert_equal({ validation => 4 }, manifest.dig("selection", "by_origin"))
+      exclusions = TimingAudit.load_jsonl(File.join(args[:output_dir], "excluded.jsonl"))
+      assert_equal [ids.last], exclusions.map { |record| record.fetch("program_id") }
+      assert_equal [validation], exclusions.map { |record| record.fetch("origin") }
+      evidence = TimingAudit.load_jsonl(File.join(args[:output_dir], "inputs.jsonl"))
+      assert_includes evidence.map { |record| record.fetch("path") }, File.join(args[:release_root], "release/catalog.json")
+      assert_includes evidence.map { |record| record.fetch("path") }, args[:benchmark_config]
+    end
+  end
+
+  def test_validation_only_requires_a_validation_run
+    fixture do |args, _ids|
+      error = assert_raises(RuntimeError) do
+        QtclusteringBoundary::Builder.new(**args, include_release: false)
+      end
+      assert_match(/requires a validation run/, error.message)
+      refute File.exist?(args[:output_dir])
+    end
+  end
+
   def test_refuses_duplicate_rows_and_validation_disagreement
     %i[duplicate disagreement].each do |fault|
       fixture do |args, _|
@@ -171,6 +202,29 @@ class QtclusteringBoundaryTest < Minitest::Test
   end
 
   private
+
+  def native_validation(args, ids)
+    root = File.join(File.dirname(args[:output_dir]), "native-validation")
+    runs = ids.to_h { |id| [id, LocalEvaluation.parse_run_id(id).merge("batch" => "batch")] }
+    manifest = {
+      "schema_version" => 1,
+      "experiment_repository" => { "git" => true, "dirty" => false, "commit" => args[:source_commit] },
+      "runs" => runs
+    }
+    path = File.join(root, "evaluation_manifest.yaml")
+    LocalEvaluation.atomic_yaml_with_digest(path, manifest, immutable: true)
+    results = ids.each_with_index.map do |id, index|
+      info = runs.fetch(id)
+      result = ValidationResult.new(info.fetch("benchmark"), info.fetch("model"), info.fetch("par_type"), info.fetch("run"))
+      stages = QtclusteringBoundary::STAGES.to_h { |stage| [stage, index < 4] }
+      stages.each { |stage, passed| result.public_send("#{stage}=", passed) }
+      write(File.join(root, "validation", id, "validation_metadata.yaml"), YAML.dump(
+        "id" => id, "manifest_sha256" => TimingAudit.sha256_file(path), "stages" => stages))
+      result
+    end
+    write(File.join(root, "validation/all_validation_results.yaml"), YAML.dump(results))
+    root
+  end
 
   def write(path, content)
     FileUtils.mkdir_p(File.dirname(path))

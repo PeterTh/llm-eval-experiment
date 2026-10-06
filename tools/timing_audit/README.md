@@ -50,6 +50,8 @@ with `bin/timing_priority_review.rb`; its `prepare-adjudication --main=PATH
 fixability disagreements, and remaining uncertainty for blind `gpt-5.6-sol`/`xhigh`
 review via the ordinary audit runner. No earlier verdict is sent to the reviewer.
 Finalization retains ambiguity rather than requiring a forced binary verdict.
+Both adjudication preparation commands accept `--model=MODEL` to retain the chosen
+reviewer identity; pass that same model to the audit runner's `--model` option.
 Validation-first independent reviews and adjudications explicitly trace whether a
 root-issued scatter or first pivot broadcast gates all useful computation. This
 guards against mistaking a proven root-clock global makespan for an invalid local
@@ -81,6 +83,12 @@ and additional completed `--validation-run` directories. Benchmark success and
 performance do not filter this review. It verifies the selected current source
 trees against each evaluated original/corrected Git revision. Use a clean sparse
 checkout on `/tmp`; persistent evidence belongs under home.
+
+For a new batch whose historical counterparts have already been reviewed, add
+`--validation-only` with one or more `--validation-run` arguments. Only those
+validation runs supply candidate programs. The required `--release-root` still
+supplies frozen configuration context, so inherited sizes remain checked against
+the published campaigns without reviewing their programs again.
 
 The frozen prompt includes the pinned sequential reference, inherited sizes,
 and platform evidence. Input generation and allocation may remain outside timing;

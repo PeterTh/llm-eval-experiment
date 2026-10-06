@@ -144,6 +144,13 @@ Stage final corrections as one generated-source commit and preserve the original
 commit. `bin/timing_fix_finalize.rb` emits the existing correction-registry schema,
 including `timing_fixed`, source hashes and original/corrected GitHub URLs.
 
+Revalidation uses the existing scientific validator, including its numeric tolerances
+and output-contract checks. Result `Hash:` equality is not required where that
+validator ignores it. Do not pause, retry, exclude, or repair a program solely for
+such a hash difference. Original/corrected output comparisons may be retained as
+descriptive evidence, but byte-for-byte equality is not an extra validation gate.
+This does not relax source/artifact integrity hashes or any native validation check.
+
 To reconcile a later focused audit before making that single correction commit,
 `timing_fix.rb prepare --audit=BASE --overlay=FOCUSED --source-root=CLEAN_CHECKOUT`
 accepts later decisions only at the same pinned Git commit and with identical source

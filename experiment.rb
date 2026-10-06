@@ -53,6 +53,8 @@ MODELS = {"claude-sonnet-4.5":1,
           "gpt-6-sol-medium":0,
           "gpt-6-luna-medium":0,
           "gpt-6-astra-medium":0,
+          "gpt-6.1-sol-medium":0,
+          "gpt-6.1-sol-xhigh":0,
           "claude-fable-5-cc-medium":0,
           "claude-opus-5-cc-medium":0,
           "claude-opus-5.5-cc-medium":0,
@@ -75,6 +77,8 @@ MODEL_MAPPING = {
     "gpt-6-sol-medium" => "gpt-6-sol",
     "gpt-6-luna-medium" => "gpt-6-luna",
     "gpt-6-astra-medium" => "gpt-6-astra",
+    "gpt-6.1-sol-medium" => "gpt-6.1-sol",
+    "gpt-6.1-sol-xhigh" => "gpt-6.1-sol",
     "claude-fable-5-cc-medium" => "claude-fable-5",
     "claude-opus-5-cc-medium" => "claude-opus-5",
     "claude-opus-5.5-cc-medium" => "claude-opus-5-5",
@@ -94,6 +98,8 @@ REASONING_MAPPING = {
     "gpt-6-sol-medium" => "medium",
     "gpt-6-luna-medium" => "medium",
     "gpt-6-astra-medium" => "medium",
+    "gpt-6.1-sol-medium" => "medium",
+    "gpt-6.1-sol-xhigh" => "xhigh",
     "claude-fable-5-cc-medium" => "medium",
     "claude-opus-5-cc-medium" => "medium",
     "claude-opus-5.5-cc-medium" => "medium",
@@ -107,6 +113,7 @@ BASE_COST_PER_REQUEST = 0.04 # base cost in dollars for github copilot requests,
 PARAMS = "--allow-all-paths --allow-all-tools --no-ask-user --no-color --autopilot"
 
 PARAMS_CODEX = '--dangerously-bypass-approvals-and-sandbox --disable apps --disable auth_elicitation --disable browser_use --disable browser_use_external --disable browser_use_full_cdp_access --disable computer_use --disable in_app_browser --disable in_app_updates --disable image_generation --disable memories --disable mentions_v2 --disable multi_agent --disable multi_agent_v2 --disable plugin_sharing --disable plugins --disable remote_plugin --disable skill_mcp_dependency_install --disable tool_call_mcp_elicitation --disable tool_suggest --disable workspace_dependencies'
+CODEX_BINARY = ENV.fetch("LLM_EVAL_CODEX_BINARY", "codex")
 
 # Claude Code flags. Full local access (like the other harnesses), but no web tools, no subagents,
 # no scheduling or remote triggers, no MCP servers, no settings/hooks/plugins from disk, and no
@@ -208,19 +215,19 @@ puts "Running in #{SMOKE ? "smoke test" : (TESTING ? "testing" : "production")} 
 
 #HARNESS = :copilot
 #HARNESS = :pi
-#HARNESS = :codex
-HARNESS = :claude
+HARNESS = :codex
+#HARNESS = :claude
 
 if SMOKE
     # Enough to verify a harness end to end (agent edits the sources, transcript is well formed,
     # state reset and usage preflight behave) without spending a campaign's worth of quota.
     BENCHMARKS_TO_EVAL = ["black-scholes"]
-    MODELS_TO_EVAL = ["claude-opus-5.5-cc-medium"]
+    MODELS_TO_EVAL = ["gpt-6.1-sol-medium", "gpt-6.1-sol-xhigh"]
     PAR_TYPES_TO_EVAL = [PAR_OMP]
     NUM_RUNS = 1
 elsif TESTING
     BENCHMARKS_TO_EVAL = BENCHMARKS # ["black-scholes", "nbody"]
-    MODELS_TO_EVAL = ["claude-opus-5.5-cc-medium"]
+    MODELS_TO_EVAL = ["gpt-6.1-sol-medium", "gpt-6.1-sol-xhigh"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 else
@@ -229,7 +236,7 @@ else
     #MODELS_TO_EVAL = ["gpt-5.6-luna-xhigh", "gpt-5.6-luna-medium", "gpt-5.6-luna-low",
     #                  "gpt-5.6-terra-xhigh", "gpt-5.6-terra-medium", "gpt-5.6-terra-low",
     #                  "gpt-5.6-sol-xhigh", "gpt-5.6-sol-medium", "gpt-5.6-sol-low"]
-    MODELS_TO_EVAL = ["claude-opus-5.5-cc-medium"]
+    MODELS_TO_EVAL = ["gpt-6.1-sol-medium", "gpt-6.1-sol-xhigh"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 end
@@ -541,7 +548,7 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
             command = "#{command_prefix} pi -p \"#{instruction}\" > output.txt 2>&1"
         elsif HARNESS == :codex
             reasoning_effort = REASONING_MAPPING[model] || "xhigh"
-            command = "#{command_prefix} codex --model #{actual_model_id} -c model_reasoning_effort=\"#{reasoning_effort}\" #{PARAMS_CODEX} exec \"#{instruction}\" > output.txt 2>&1"
+            command = "#{command_prefix} \"#{CODEX_BINARY}\" --model #{actual_model_id} -c model_reasoning_effort=\"#{reasoning_effort}\" #{PARAMS_CODEX} exec \"#{instruction}\" > output.txt 2>&1"
         elsif HARNESS == :claude
             command = claude_command(command_prefix, actual_model_id, REASONING_MAPPING.fetch(model), instruction)
         else

@@ -86,22 +86,26 @@ Selection preserves the configured execution order, prompts and per-run budget.
 Unknown, duplicate or empty selections fail before generation. Completed IDs retain
 their outputs and are skipped on continuation. Do not use `--smoke` for a reusable
 production preflight: it uses a shorter timeout. Freeze the launch scripts and
-source revision, and set `LLM_EVAL_CLAUDE_BINARY` to a versioned executable when
-pinning Claude Code. Keep persistent campaign records under home, temporary work
+source revision, and set `LLM_EVAL_CLAUDE_BINARY` or `LLM_EVAL_CODEX_BINARY` to a
+versioned executable when pinning the CLI. Keep persistent campaign records under home, temporary work
 on local storage, and the `llmtest` account free of unrelated sessions during runs.
 
-`tools/generation_campaign.rb gate|run|status CAMPAIGN_ROOT` provides serial
-supervision for a frozen Claude campaign. Its persistent `campaign.json` and
+`tools/generation_campaign.rb preflight|gate|run|status CAMPAIGN_ROOT` provides serial
+supervision for a frozen Claude Code or Codex campaign. Its persistent `campaign.json` and
 `run-ids.txt` identify the pinned harness, executable, model, budget, paths and
-complete ordered selection. `gate` accepts an existing production preflight based
+complete ordered selection. `preflight` runs the selected production observations;
+Codex campaigns require one per model/effort profile. `gate` accepts those observations based
 only on harness metadata, not on the generated program's correctness. `run`
 reuses completed observations and invokes the frozen `runtime_root/run.rb` for
-one pending ID at a time. It checks model identity, permitted capabilities, token
-accounting and completion records between runs. An anomaly or a `STOP` file in
+one pending ID at a time. It checks harness identity, effort, applicable capability
+metadata and completion records between runs. Codex exact token accounting is
+recovered from session rollouts at the preflight gate and after the full campaign,
+with the account idle, never during agent performance tuning. Compact usage records
+bind the counters to each transcript and session hash. An anomaly or a `STOP` file in
 the campaign directory stops further launches; it does not regenerate completed
 work. Genuine full-budget timeouts are retained as observations.
 
-An identical same-session initialization repeated after a background-task
+For Claude Code, an identical same-session initialization repeated after a background-task
 notification is accepted only when the follow-up result identifies that origin
 and its token/API counters remain cumulative. The final cumulative totals are
 counted once. Changed identities/capabilities or unexplained reinitialization

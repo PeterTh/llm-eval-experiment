@@ -27,9 +27,13 @@ module ValidationAuditExport
     copy = lambda do |source, relative|
       TimingAudit.atomic_write(File.join(output_dir, relative), File.binread(source))
     end
-    %w[evaluation_manifest.yaml evaluation_manifest.yaml.sha256 preflight.yaml].each do |name|
+    %w[evaluation_manifest.yaml evaluation_manifest.yaml.sha256].each do |name|
       copy.call(File.join(run_dir, name), "provenance/#{name}")
     end
+    # Scoped revalidation creates its manifest directly and retains the actual
+    # validation-stage preflight below, without a separate bootstrap preflight.
+    initial_preflight = File.join(run_dir, "preflight.yaml")
+    copy.call(initial_preflight, "provenance/preflight.yaml") if File.file?(initial_preflight)
     copy.call(File.join(run_dir, "campaign.md"), "provenance/campaign.md") if File.file?(File.join(run_dir, "campaign.md"))
     copy.call(File.join(run_dir, "validation/preflight.yaml"), "provenance/validation-preflight.yaml")
     copy.call(File.join(run_dir, "validation/all_validation_results.yaml"), "validation/all_validation_results.yaml")

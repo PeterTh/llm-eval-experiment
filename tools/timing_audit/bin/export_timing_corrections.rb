@@ -64,7 +64,49 @@ module TimingCorrectionExport
       "corrected_numerical_results_sha256" => TimingAudit.sha256_bytes(JSON.generate(blocks[1])) }
   end
 
-  def run(batch_dir:, proposal_root:, review_root:, adjudication_root:, final_root:, validation_run:, original_source:)
+  # A focused later audit can resolve an earlier decision without rewriting it.
+  # Retain an ordered, digest-bound recipe instead of duplicating all decisions.
+  def resolved_audit_selection(batch_dir, selection_path)
+    base = File.realpath(batch_dir) + "/"
+    selection_path = File.realpath(selection_path)
+    raise "Audit selection must be retained in the batch" unless selection_path.start_with?(base)
+    selection = JSON.parse(File.read(selection_path))
+    raise "Unsupported audit selection" unless selection.fetch("schema_version") == 1
+    inputs = selection.fetch("ordered_decisions")
+    raise "Missing or duplicate audit inputs" if inputs.empty? || inputs.map { |entry| entry.fetch("path") }.uniq.size != inputs.size
+    resolved = {}
+    inputs.each do |input|
+      relative = input.fetch("path")
+      raise "Unsafe audit input" if relative.start_with?("/") || relative.split("/").include?("..")
+      path = File.realpath(File.join(base, relative))
+      raise "Audit input outside batch" unless path.start_with?(base)
+      raise "Audit input changed" unless TimingAudit.sha256_file(path) == input.fetch("sha256")
+      records = TimingAudit.load_jsonl(path)
+      raise "Duplicate audit IDs" unless records.map { |record| record.fetch("program_id") }.uniq.size == records.size
+      records.each do |record|
+        id = record.fetch("program_id")
+        if resolved[id]
+          %w[benchmark model par_type run source_tree_oid source_digest].each do |key|
+            raise "Audit overlay source differs for #{id}" unless record.fetch(key) == resolved.fetch(id).fetch(key)
+          end
+        end
+        resolved[id] = record
+      end
+    end
+    raise "Audit selection count differs" unless resolved.size == selection.fetch("record_count")
+    counts = resolved.values.group_by { |record| record.fetch("final_verdict") }.transform_values(&:size)
+    raise "Audit selection verdict counts differ" unless counts == selection.fetch("verdict_counts")
+    resolved.each_value do |record|
+      verdict = record.fetch("final_verdict")
+      raise "Unresolved audit selection" unless %w[valid invalid].include?(verdict) && record.fetch("timing_review_required") == false
+      raise "Audit selection flag differs" unless record.fetch("timing_fix_required") == (verdict == "invalid")
+    end
+    ids = resolved.values.select { |record| record.fetch("timing_fix_required") }.map { |record| record.fetch("program_id") }.sort
+    raise "Audit correction selection differs" unless ids == selection.fetch("correction_ids")
+    [selection, resolved, ids]
+  end
+
+  def run(batch_dir:, proposal_root:, review_root:, adjudication_root:, final_root:, validation_run:, original_source:, audit_selection: nil)
     batch_dir = File.realpath(batch_dir)
     final_root = File.realpath(final_root)
     output = File.join(batch_dir, "timing-corrections")
@@ -78,7 +120,15 @@ module TimingCorrectionExport
     raise "Refusing to replace a different correction campaign" if File.file?(prior_manifest) && TimingAudit.sha256_file(prior_manifest) != TimingAudit.sha256_file(manifest_path)
     records = TimingAudit.load_jsonl(records_path)
     by_id = records.to_h { |record| [record.fetch("program_id"), record] }
-    audit_ids = File.readlines(File.join(batch_dir, "timing-audit/primary/final/correction-ids.txt"), chomp: true)
+    if audit_selection
+      selection, decisions, audit_ids = resolved_audit_selection(batch_dir, audit_selection)
+      raise "Audit selection source revision differs" unless selection.fetch("source_commit") == manifest.dig("original_source", "commit")
+      records.each do |record|
+        raise "Correction/audit source differs" unless record.dig("original_source", "digest") == decisions.fetch(record.fetch("program_id")).fetch("source_digest")
+      end
+    else
+      audit_ids = File.readlines(File.join(batch_dir, "timing-audit/primary/final/correction-ids.txt"), chomp: true)
+    end
     validation_manifest = LocalEvaluation::Manifest.new(validation_run)
     validation_results = LocalEvaluation.load_yaml(File.join(validation_run, "validation/all_validation_results.yaml"), permitted_classes: [ValidationResult])
     validate_registry!(manifest, records, audit_ids, validation_manifest, validation_results)
@@ -183,6 +233,10 @@ module TimingCorrectionExport
       "numerical_results_identical" => validation_comparisons.count { |record| record.fetch("numerical_results_identical") },
       "numerical_results_differing_ids" => validation_comparisons.reject { |record| record.fetch("numerical_results_identical") }.map { |record| record.fetch("program_id") },
       "originals_preserved_in_git" => true, "correction_manifest_sha256" => TimingAudit.sha256_file(manifest_path) }
+    if audit_selection
+      summary["audit_selection"] = File.realpath(audit_selection).delete_prefix(batch_dir + "/")
+      summary["audit_selection_sha256"] = TimingAudit.sha256_file(audit_selection)
+    end
     TimingAudit.atomic_write(File.join(output, "summary.json"), JSON.pretty_generate(summary) + "\n")
     TimingAudit.atomic_write(File.join(output, "README.md"), <<~README)
       # Timing-only corrections: #{validation_manifest.data.fetch("batches").join(", ")}
@@ -238,6 +292,7 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--final=PATH") { |value| options[:final_root] = value }
     opts.on("--validation-run=PATH") { |value| options[:validation_run] = value }
     opts.on("--original-source=PATH") { |value| options[:original_source] = value }
+    opts.on("--audit-selection=PATH") { |value| options[:audit_selection] = value }
   end.parse!(ARGV)
   required = %i[batch_dir proposal_root review_root adjudication_root final_root validation_run original_source]
   abort "Missing correction export paths" unless ARGV.empty? && required.all? { |key| options[key] }

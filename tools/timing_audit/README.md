@@ -172,6 +172,14 @@ Both source links match the current website's correction fields; the batch is no
 added to performance views until benchmarking/scoring and publication are requested.
 Original validation/audit evidence and unrelated historical measurements are kept.
 
+For a campaign resolved by several audit passes, `--audit-selection=PATH` accepts
+an ordered, digest-bound recipe retained inside the batch. It composes decisions
+only for identical source identities, checks the final verdict counts and
+correction IDs, and binds the selection digest into the correction summary.
+Earlier decision files stay intact. The export requires the actual validation
+preflight; a separate bootstrap preflight is retained when present but is not
+required for a directly created scoped-revalidation manifest.
+
 ## Benchmarking a validation-first batch
 
 `bin/benchmark_validation_batch.rb` sequences the unchanged benchmark pipeline for

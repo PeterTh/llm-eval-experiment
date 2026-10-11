@@ -329,6 +329,14 @@ class TimingAuditTest < Minitest::Test
       assert_equal 1, status.exitstatus
       assert_includes stderr, "Usage:"
       refute_includes stderr, "LoadError"
+      # Manifest-created scoped runs need only the actual validation preflight.
+      File.unlink(File.join(run_dir, "preflight.yaml"))
+      scoped = File.join(root, "scoped-export")
+      ValidationAuditExport.run(run_dir: run_dir, output_dir: scoped)
+      assert File.file?(File.join(scoped, "provenance/validation-preflight.yaml"))
+      refute File.exist?(File.join(scoped, "provenance/preflight.yaml"))
+      File.unlink(File.join(run_dir, "validation/preflight.yaml"))
+      assert_raises(Errno::ENOENT) { ValidationAuditExport.run(run_dir: run_dir, output_dir: File.join(root, "missing-preflight")) }
     end
   end
 

@@ -140,4 +140,37 @@ class TimingFixCampaignTest < Minitest::Test
     refute TimingCorrectionExport.compare_numerical_outputs(result, result.sub("1.0", "1.1")).fetch("numerical_results_identical")
     assert_raises(RuntimeError) { TimingCorrectionExport.compare_numerical_outputs(result, "missing results") }
   end
+
+  def test_resolved_audit_selection_preserves_and_binds_ordered_overlays
+    Dir.mktmpdir do |root|
+      record = { "program_id" => "example", "benchmark" => "example", "model" => "test",
+        "par_type" => "hybrid", "run" => 1, "source_tree_oid" => "a" * 40,
+        "source_digest" => "b" * 64, "final_verdict" => "invalid",
+        "timing_fix_required" => true, "timing_review_required" => false }
+      original = TimingAudit.dump_jsonl([record])
+      final = record.merge("final_verdict" => "valid", "timing_fix_required" => false)
+      File.write(File.join(root, "primary.jsonl"), original)
+      File.write(File.join(root, "focused.jsonl"), TimingAudit.dump_jsonl([final]))
+      selection = { "schema_version" => 1, "source_commit" => "c" * 40,
+        "ordered_decisions" => %w[primary.jsonl focused.jsonl].map { |name|
+          { "path" => name, "sha256" => TimingAudit.sha256_file(File.join(root, name)) } },
+        "record_count" => 1, "verdict_counts" => { "valid" => 1 }, "correction_ids" => [] }
+      path = File.join(root, "selection.json")
+      check = lambda do
+        File.write(path, JSON.generate(selection))
+        TimingCorrectionExport.resolved_audit_selection(root, path)
+      end
+      assert_empty check.call.last
+      assert_equal original, File.read(File.join(root, "primary.jsonl"))
+      selection["correction_ids"] = ["example"]
+      assert_match(/correction selection differs/, assert_raises(RuntimeError, &check).message)
+      selection["correction_ids"] = []
+      File.write(File.join(root, "focused.jsonl"), TimingAudit.dump_jsonl([final.merge("source_digest" => "d" * 64)]))
+      assert_match(/input changed/, assert_raises(RuntimeError, &check).message)
+      selection["ordered_decisions"].last["sha256"] = TimingAudit.sha256_file(File.join(root, "focused.jsonl"))
+      assert_match(/source differs/, assert_raises(RuntimeError, &check).message)
+      selection["ordered_decisions"].last["path"] = "../outside.jsonl"
+      assert_match(/Unsafe/, assert_raises(RuntimeError, &check).message)
+    end
+  end
 end

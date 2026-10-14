@@ -305,6 +305,17 @@ counters when available. A later background-task notification can have a per-tur
 `usage` value, so using that value would undercount the session's tokens. Total input
 includes uncached, cache-read, and cache-creation tokens; cached tokens remain a subset.
 
+Haiku 5.5's context tiers apply to each request's input, including cache reads and
+writes, not the cumulative session input. `tools/metadata/recover_claude_context_usage.rb`
+recovers compact tier evidence from original Git-pinned transcripts and generation
+observations. It verifies request input and cache-lifetime counters against the
+native totals. Streamed output counters are incomplete; single-tier sessions use
+the native final output total, while mixed-tier output totals are explicitly labeled
+as derived from that total and the harness's reported list-price total. Integer,
+range and pricing checks must all pass. The comparison retains the existing Claude
+convention of pricing cache creation as ordinary input. Original counters remain
+unchanged. See the [documented Haiku pricing and threshold](https://platform.claude.com/docs/en/models/haiku-5-5/overview).
+
 For completed Claude sessions, aggregation subtracts the sum of recorded
 `system/api_retry.retry_delay_ms` waits from both generation `total_time` and
 `api_time`, excluding server retry backoff from the analysis. Original values are

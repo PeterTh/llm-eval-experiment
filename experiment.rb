@@ -61,6 +61,7 @@ MODELS = {"claude-sonnet-4.5":1,
           "claude-opus-5-cc-medium":0,
           "claude-opus-5.5-cc-medium":0,
           "claude-sonnet-5-cc-medium":0,
+          "claude-sonnet-5.5-cc-medium":0,
         }
 
 MODEL_MAPPING = {
@@ -87,6 +88,7 @@ MODEL_MAPPING = {
     "claude-opus-5-cc-medium" => "claude-opus-5",
     "claude-opus-5.5-cc-medium" => "claude-opus-5-5",
     "claude-sonnet-5-cc-medium" => "claude-sonnet-5",
+    "claude-sonnet-5.5-cc-medium" => "claude-sonnet-5-5",
 }
 
 REASONING_MAPPING = {
@@ -110,6 +112,7 @@ REASONING_MAPPING = {
     "claude-opus-5-cc-medium" => "medium",
     "claude-opus-5.5-cc-medium" => "medium",
     "claude-sonnet-5-cc-medium" => "medium",
+    "claude-sonnet-5.5-cc-medium" => "medium",
 }
 
 REASONING_EFFORTS_CLAUDE = %w[low medium high xhigh max]
@@ -228,12 +231,12 @@ if SMOKE
     # Enough to verify a harness end to end (agent edits the sources, transcript is well formed,
     # state reset and usage preflight behave) without spending a campaign's worth of quota.
     BENCHMARKS_TO_EVAL = ["black-scholes"]
-    MODELS_TO_EVAL = ["claude-haiku-5.5-cc-medium"]
+    MODELS_TO_EVAL = ["claude-sonnet-5.5-cc-medium"]
     PAR_TYPES_TO_EVAL = [PAR_OMP]
     NUM_RUNS = 1
 elsif TESTING
     BENCHMARKS_TO_EVAL = BENCHMARKS # ["black-scholes", "nbody"]
-    MODELS_TO_EVAL = ["claude-haiku-5.5-cc-medium"]
+    MODELS_TO_EVAL = ["claude-sonnet-5.5-cc-medium"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 else
@@ -242,7 +245,7 @@ else
     #MODELS_TO_EVAL = ["gpt-5.6-luna-xhigh", "gpt-5.6-luna-medium", "gpt-5.6-luna-low",
     #                  "gpt-5.6-terra-xhigh", "gpt-5.6-terra-medium", "gpt-5.6-terra-low",
     #                  "gpt-5.6-sol-xhigh", "gpt-5.6-sol-medium", "gpt-5.6-sol-low"]
-    MODELS_TO_EVAL = ["claude-haiku-5.5-cc-medium"]
+    MODELS_TO_EVAL = ["claude-sonnet-5.5-cc-medium"]
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 end

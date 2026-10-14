@@ -24,6 +24,7 @@ when "review", "pilot-gate", "finalize"
   parser = OptionParser.new do |opts|
     opts.on("--main=PATH") { |v| options[:main_root] = v }
     opts.on("--review=PATH") { |v| options[command == "review" ? :output_dir : :review_root] = v }
+    opts.on("--independent=PATH", "Optional independent Luna boundary reviews for disagreement selection") { |v| options[:independent_root] = v }
     if command == "review"
       opts.on("--scope=SCOPE", %w[trial full]) { |v| options[:scope] = v }
       opts.on("--jobs=N", Integer) { |v| options[:jobs] = v }

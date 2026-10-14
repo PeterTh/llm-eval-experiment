@@ -8,6 +8,7 @@ module QtclusteringBoundary
   BACKENDS = %w[omp cuda mpi hybrid].freeze
   PRIMARY_MODEL = "gpt-5.6-luna"
   ADJUDICATION_MODEL = "gpt-6.1-sol"
+  REVIEW_POLICY = "luna_first_uncertainty_or_disagreement_v1"
   PILOT_CONTROLS = %w[
     qtclustering_gpt-6-luna-medium_hybrid_r2
     qtclustering_gpt-6-luna-medium_hybrid_r4
@@ -39,7 +40,7 @@ module QtclusteringBoundary
         "boundary_adjudication" => { "parent_root" => main,
           "parent_manifest_sha256" => TimingAudit.sha256_file(File.join(main, "manifest.yaml")),
           "model" => ADJUDICATION_MODEL, "effort" => "xhigh", "blind" => true,
-          "selection" => "pilot plus all non-valid/non-high-confidence and MPI makespan controls" }
+          "selection" => REVIEW_POLICY }
       })
     copied = YAML.safe_load_file(File.join(output_dir, "manifest.yaml"))
     trial = File.read(File.join(main, "trial-ids.txt"))
@@ -55,18 +56,31 @@ module QtclusteringBoundary
     TimingAudit.atomic_write(File.join(output_dir, "manifest.yaml"), YAML.dump(copied))
   end
 
-  def review_selection(main_root)
-    pilot = File.readlines(File.join(main_root, "trial-ids.txt"), chomp: true)
-    source_root = YAML.safe_load_file(File.join(main_root, "manifest.yaml")).fetch("generated_source").fetch("root")
-    TimingAudit.load_jsonl(File.join(main_root, "inventory.jsonl")).filter_map do |record|
+  def review_selection(main_root, scope: "full", independent_root: nil)
+    raise "Unknown review scope" unless %w[trial full].include?(scope)
+    records = TimingAudit.load_jsonl(File.join(main_root, "inventory.jsonl"))
+    if scope == "trial"
+      trial = File.readlines(File.join(main_root, "trial-ids.txt"), chomp: true)
+      records = records.select { |record| trial.include?(record.fetch("id")) }
+    end
+    primary = verify_results(main_root, records.map { |record| record.fetch("id") }, PRIMARY_MODEL)
+    independent = {}
+    if independent_root
+      other_records = TimingAudit.load_jsonl(File.join(independent_root, "inventory.jsonl"))
+      originals = TimingAudit.load_jsonl(File.join(main_root, "inventory.jsonl")).to_h { |r| [r.fetch("id"), r] }
+      other_records.each do |record|
+        raise "Independent review source mismatch" unless originals.fetch(record.fetch("id")).fetch("source_digest") == record.fetch("source_digest")
+      end
+      independent = verify_results(independent_root, other_records.map { |r| r.fetch("id") }, PRIMARY_MODEL)
+    end
+    records.filter_map do |record|
       id = record.fetch("id")
-      result = JSON.parse(File.read(File.join(main_root, "results", "#{id}.json")))
+      result = primary.fetch(id)
       reasons = []
-      reasons << "pilot_quality_control" if pilot.include?(id)
-      reasons << "non_valid" unless result.fetch("verdict") == "valid"
-      reasons << "uncertain" unless result.fetch("confidence") == "high"
-      if %w[mpi hybrid].include?(record.fetch("par_type")) && !explicit_mpi_max?(record, source_root)
-        reasons << "global_makespan_control"
+      reasons << "ambiguous" if result.fetch("verdict") == "ambiguous"
+      reasons << "not_high_confidence" unless result.fetch("confidence") == "high"
+      if independent[id] && TimingAudit.adjudication_required?(result, independent.fetch(id), include_uncertain: true)
+        reasons << "independent_review_disagreement_or_uncertainty"
       end
       next if reasons.empty?
       { "program_id" => id, "reasons" => reasons }
@@ -83,23 +97,68 @@ module QtclusteringBoundary
     end
   end
 
-  def run_review(main_root:, output_dir:, scope:, jobs: nil)
+  # Freeze previously completed reviews separately from new escalation requests.
+  # This preserves legacy pilot evidence without requesting a new blanket pilot.
+  def review_plan(main_root:, review_root:, scope:, independent_root: nil, create: false)
+    selection = review_selection(main_root, scope: scope, independent_root: independent_root)
+    filename = scope == "full" ? "adjudication-selection.jsonl" : "adjudication-selection-trial.jsonl"
+    selection_path = File.join(review_root, filename)
+    plan_path = File.join(review_root, "adjudication-plan-#{scope}.json")
+    binding = {
+      "policy" => REVIEW_POLICY, "scope" => scope,
+      "primary_manifest_sha256" => TimingAudit.sha256_file(File.join(main_root, "manifest.yaml")),
+      "selection_sha256" => TimingAudit.sha256_bytes(TimingAudit.dump_jsonl(selection)),
+      "independent_root" => independent_root && File.realpath(independent_root),
+      "independent_manifest_sha256" => independent_root && TimingAudit.sha256_file(File.join(independent_root, "manifest.yaml"))
+    }
+    binding["primary_results_sha256"] = Dir[File.join(main_root, "results", "*.json")].sort.to_h do |path|
+      [File.basename(path, ".json"), TimingAudit.sha256_file(path)]
+    end
+    if independent_root
+      binding["independent_results_sha256"] = Dir[File.join(independent_root, "results", "*.json")].sort.to_h do |path|
+        [File.basename(path, ".json"), TimingAudit.sha256_file(path)]
+      end
+    end
+    if File.exist?(plan_path)
+      plan = JSON.parse(File.read(plan_path))
+      raise "Adjudication plan changed" unless binding.all? { |key, value| plan.fetch(key) == value }
+      raise "Selection changed" unless selection == TimingAudit.load_jsonl(selection_path)
+    else
+      raise "Missing adjudication plan" unless create
+      raise "Unplanned selection already exists" if File.exist?(selection_path)
+      retained = Dir[File.join(review_root, "results", "*.json")].sort.to_h do |path|
+        [File.basename(path, ".json"), TimingAudit.sha256_file(path)]
+      end
+      verify_results(review_root, retained.keys, ADJUDICATION_MODEL)
+      plan = binding.merge("created_at" => TimingAudit.utc_now, "retained_results" => retained,
+        "policy_sha256" => TimingAudit.sha256_file(__FILE__))
+      TimingAudit.atomic_write(selection_path, TimingAudit.dump_jsonl(selection))
+      TimingAudit.atomic_write(File.join(review_root, "active-review-policy-#{scope}.rb"), File.binread(__FILE__))
+      TimingAudit.atomic_write(plan_path, JSON.pretty_generate(plan) + "\n")
+    end
+    raise "Frozen review policy changed" unless plan.fetch("policy_sha256") ==
+      TimingAudit.sha256_file(File.join(review_root, "active-review-policy-#{scope}.rb"))
+    plan.fetch("retained_results").each do |id, digest|
+      raise "Retained review changed: #{id}" unless TimingAudit.sha256_file(File.join(review_root, "results", "#{id}.json")) == digest
+    end
+    actual = Dir[File.join(review_root, "results", "*.json")].map { |path| File.basename(path, ".json") }
+    allowed = selection.map { |row| row.fetch("program_id") } | plan.fetch("retained_results").keys
+    raise "Unselected adjudication results" unless (actual - allowed).empty?
+    [selection, plan]
+  end
+
+  def run_review(main_root:, output_dir:, scope:, jobs: nil, independent_root: nil)
     main = File.realpath(main_root)
     raise "Unknown review scope" unless %w[trial full].include?(scope)
     prepare_review(main_root: main, output_dir: output_dir) unless File.exist?(output_dir)
     manifest = YAML.safe_load_file(File.join(output_dir, "manifest.yaml"))
     raise "Adjudication parent changed" unless manifest.dig("boundary_adjudication", "parent_manifest_sha256") ==
       TimingAudit.sha256_file(File.join(main, "manifest.yaml"))
-    if scope == "full"
-      selection = review_selection(main)
-      path = File.join(output_dir, "adjudication-selection.jsonl")
-      bytes = TimingAudit.dump_jsonl(selection)
-      raise "Adjudication selection changed" if File.exist?(path) && File.binread(path) != bytes
-      TimingAudit.atomic_write(path, bytes)
-      ids = selection.map { |r| r.fetch("program_id") }
-    else
-      ids = File.readlines(File.join(main, "trial-ids.txt"), chomp: true).reject(&:empty?)
-    end
+    selection, = review_plan(main_root: main, review_root: output_dir, scope: scope,
+      independent_root: independent_root, create: true)
+    ids = selection.map { |row| row.fetch("program_id") }
+    # AuditRunner interprets an empty only_ids array as the entire inventory.
+    return puts "No uncertain or disputed QT-clustering reviews require Sol" if ids.empty?
     TimingAudit::AuditRunner.new(output_dir: output_dir, scope: scope, jobs: jobs || (scope == "trial" ? 4 : 16),
       model: ADJUDICATION_MODEL, effort: "xhigh", only_ids: ids).run
   end
@@ -124,11 +183,14 @@ module QtclusteringBoundary
     end
   end
 
-  def pilot_gate(main_root:, review_root:)
+  def pilot_gate(main_root:, review_root:, independent_root: nil)
     ids = File.readlines(File.join(main_root, "trial-ids.txt"), chomp: true).reject(&:empty?)
     primary = verify_results(main_root, ids, PRIMARY_MODEL)
-    stronger = verify_results(review_root, ids, ADJUDICATION_MODEL)
-    comparisons = ids.map do |id|
+    selected = review_selection(main_root, scope: "trial", independent_root: independent_root)
+      .map { |row| row.fetch("program_id") }
+    retained = ids.select { |id| File.exist?(File.join(review_root, "results", "#{id}.json")) }
+    stronger = verify_results(review_root, selected | retained, ADJUDICATION_MODEL)
+    comparisons = stronger.keys.map do |id|
       a, b = primary.fetch(id), stronger.fetch(id)
       { "program_id" => id, "luna_verdict" => a.fetch("verdict"), "sol_verdict" => b.fetch("verdict"),
         "luna_categories" => a.fetch("issue_categories"), "sol_categories" => b.fetch("issue_categories"),
@@ -140,12 +202,14 @@ module QtclusteringBoundary
     PILOT_CONTROLS.first(3).each do |id|
       next unless ids.include?(id)
       [primary, stronger].each do |results|
+        next unless results.key?(id)
         failures << "missing_known_precomputation_defect:#{id}" unless results.fetch(id).fetch("issue_categories").include?("incomplete_timed_region")
       end
     end
     report = { "created_at" => TimingAudit.utc_now, "passed" => failures.empty?, "failures" => failures.uniq,
       "records" => ids.size, "comparisons" => comparisons,
-      "policy" => "Blind Sol-6.1/xhigh pilot review; require high-confidence resolutions, known preprocessing defects detected, at most two verdict disagreements; disputed cases use Sol adjudication",
+      "policy" => REVIEW_POLICY, "adjudications_required" => selected.size,
+      "retained_sol_reviews" => retained.size,
       "primary_manifest_sha256" => TimingAudit.sha256_file(File.join(main_root, "manifest.yaml")),
       "review_manifest_sha256" => TimingAudit.sha256_file(File.join(review_root, "manifest.yaml")) }
     TimingAudit.atomic_write(File.join(main_root, "pilot-review.json"), JSON.pretty_generate(report) + "\n")
@@ -153,7 +217,7 @@ module QtclusteringBoundary
     failures.empty?
   end
 
-  def finalize(main_root:, review_root:)
+  def finalize(main_root:, review_root:, independent_root: nil)
     manifest = YAML.safe_load_file(File.join(main_root, "manifest.yaml"))
     review_manifest = YAML.safe_load_file(File.join(review_root, "manifest.yaml"))
     raise "Adjudication parent changed" unless review_manifest.dig("boundary_adjudication", "parent_manifest_sha256") ==
@@ -162,9 +226,9 @@ module QtclusteringBoundary
       TimingAudit.sha256_file(File.join(review_root, "inventory.jsonl"))
     records = TimingAudit.load_jsonl(File.join(main_root, "inventory.jsonl"))
     primary = verify_results(main_root, records.map { |r| r.fetch("id") }, PRIMARY_MODEL)
-    selection = review_selection(main_root)
-    raise "Selection changed" unless selection == TimingAudit.load_jsonl(File.join(review_root, "adjudication-selection.jsonl"))
-    review_ids = selection.map { |r| r.fetch("program_id") }
+    selection, plan = review_plan(main_root: main_root, review_root: review_root,
+      scope: "full", independent_root: independent_root)
+    review_ids = selection.map { |r| r.fetch("program_id") } | plan.fetch("retained_results").keys
     actual_review_ids = Dir[File.join(review_root, "results", "*.json")].map { |path| File.basename(path, ".json") }.sort
     raise "Adjudication result coverage mismatch" unless actual_review_ids == review_ids.sort
     stronger = verify_results(review_root, review_ids, ADJUDICATION_MODEL)
@@ -196,8 +260,11 @@ module QtclusteringBoundary
     end
     metadata = { "created_at" => TimingAudit.utc_now, "records" => records.size,
       "final_verdict_counts" => decisions.group_by { |d| d.fetch("final_verdict") }.transform_values(&:size),
-      "roots" => { "primary" => File.realpath(main_root), "priority_review" => nil, "adjudication" => File.realpath(review_root) },
+      "roots" => { "primary" => File.realpath(main_root), "priority_review" => independent_root && File.realpath(independent_root), "adjudication" => File.realpath(review_root) },
       "review_models" => manifest.fetch("review_models"), "adjudications" => stronger.size,
+      "adjudications_selected" => selection.size, "retained_sol_reviews" => plan.fetch("retained_results").size,
+      "review_policy" => REVIEW_POLICY,
+      "review_plan_sha256" => TimingAudit.sha256_file(File.join(review_root, "adjudication-plan-full.json")),
       "primary_manifest_sha256" => TimingAudit.sha256_file(File.join(main_root, "manifest.yaml")),
       "review_manifest_sha256" => TimingAudit.sha256_file(File.join(review_root, "manifest.yaml")),
       "decisions_sha256" => TimingAudit.sha256_file(File.join(final_dir, "decisions.jsonl")),

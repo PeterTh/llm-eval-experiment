@@ -97,13 +97,20 @@ spatial indexes) must be included. The same contract applies to OpenMP, CUDA,
 MPI and hybrid. Review workers cannot compile or execute code.
 
 Run the ordinary audit runner with Luna/high and `--scope=trial --jobs=4`, then
-`qtclustering_boundary.rb review --main=PATH --review=PATH --scope=trial --jobs=4`
-for a blind Sol-6.1/xhigh check of the same pilot. `pilot-gate --main=PATH
+`qtclustering_boundary.rb review --main=PATH --review=PATH --scope=trial --jobs=2`
+to resolve only ambiguous or non-high-confidence findings with blind
+Sol-6.1/xhigh review. A confident defect, pilot membership, or absence of a
+literal `MPI_MAX` is not by itself a reason to invoke Sol. If independent Luna
+boundary reviews exist, supply `--independent=PATH` to select disagreements or
+remaining uncertainty as well. Use that same argument for review, gate and
+finalization. `pilot-gate --main=PATH
 --review=PATH` retains the quality check; inspect any failed gate before expanding.
 Run the primary full inventory with 16 workers after the gate passes. The `review`
-command with `--scope=full` selects every flagged or uncertain result and MPI
-makespan controls, reusing the pilot adjudications. Prior verdicts are not sent
-to Sol. `finalize --main=PATH --review=PATH` verifies source-only evidence, reviewer
+command with `--scope=full` uses the same uncertainty/disagreement rule. An empty
+selection launches no reviewer. Each review plan binds its selection and any
+already completed Sol responses; legacy pilot evidence is preserved and reused,
+not repeated. Prior verdicts are not sent to Sol.
+`finalize --main=PATH --review=PATH` verifies source-only evidence, reviewer
 identity and immutable artifacts and retains unresolved uncertainty explicitly.
 Only difficult unresolved cases require Astra/human review. Earlier audit campaigns
 are not overwritten; the new decisions must be reconciled before timing-only

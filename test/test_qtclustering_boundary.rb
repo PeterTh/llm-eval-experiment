@@ -126,8 +126,8 @@ class QtclusteringBoundaryTest < Minitest::Test
       capture_io { passed = QtclusteringBoundary.pilot_gate(main_root: main, review_root: review) }
       refute passed
       selection = QtclusteringBoundary.review_selection(main)
-      assert_equal records.size, selection.size
-      write(File.join(review, "adjudication-selection.jsonl"), TimingAudit.dump_jsonl(selection))
+      assert_empty selection
+      capture_io { QtclusteringBoundary.run_review(main_root: main, output_dir: review, scope: "full") }
       capture_io { QtclusteringBoundary.finalize(main_root: main, review_root: review) }
       decisions = TimingAudit.load_jsonl(File.join(main, "final/decisions.jsonl"))
       row = decisions.find { |r| r.fetch("program_id") == uncertain.fetch("id") }
@@ -155,6 +155,117 @@ class QtclusteringBoundaryTest < Minitest::Test
       assert QtclusteringBoundary.verify_results(main, [record.fetch("id")], QtclusteringBoundary::PRIMARY_MODEL)
       File.write(File.join(main, "reference-source.txt"), "changed")
       assert_raises(RuntimeError) { QtclusteringBoundary.verify_results(main, [record.fetch("id")], QtclusteringBoundary::PRIMARY_MODEL) }
+    end
+  end
+
+  def test_confident_pilot_defects_and_missing_mpi_max_do_not_launch_sol
+    fixture do |args, _|
+      main = args.fetch(:output_dir)
+      review = "#{main}-review"
+      capture_io { QtclusteringBoundary::Builder.new(**args).run }
+      records = TimingAudit.load_jsonl(File.join(main, "inventory.jsonl"))
+      records.each { |record| fake_result(main, record, QtclusteringBoundary::PRIMARY_MODEL, verdict: "invalid") }
+      # Every fixture is in the pilot, and neither MPI fixture contains MPI_MAX.
+      assert_empty QtclusteringBoundary.review_selection(main)
+      assert_empty QtclusteringBoundary.review_selection(main, scope: "trial")
+      QtclusteringBoundary.prepare_review(main_root: main, output_dir: review)
+      TimingAudit::AuditRunner.stub(:new, ->(**_) { flunk "Empty selection must never invoke the entire inventory" }) do
+        capture_io do
+          QtclusteringBoundary.run_review(main_root: main, output_dir: review, scope: "trial")
+          QtclusteringBoundary.run_review(main_root: main, output_dir: review, scope: "full")
+          assert QtclusteringBoundary.pilot_gate(main_root: main, review_root: review)
+          QtclusteringBoundary.finalize(main_root: main, review_root: review)
+        end
+      end
+      decisions = TimingAudit.load_jsonl(File.join(main, "final/decisions.jsonl"))
+      assert decisions.all? { |row| row.fetch("final_verdict") == "invalid" && row.fetch("decision_basis") == "luna_high_boundary_review" }
+      metadata = YAML.safe_load_file(File.join(main, "final/metadata.yaml"))
+      assert_equal 0, metadata.fetch("adjudications")
+    end
+  end
+
+  def test_only_uncertain_or_disputed_luna_results_are_selected
+    fixture do |args, _|
+      main = args.fetch(:output_dir)
+      independent = "#{main}-independent"
+      capture_io { QtclusteringBoundary::Builder.new(**args).run }
+      records = TimingAudit.load_jsonl(File.join(main, "inventory.jsonl"))
+      records.each { |record| fake_result(main, record, QtclusteringBoundary::PRIMARY_MODEL) }
+      fake_result(main, records[0], QtclusteringBoundary::PRIMARY_MODEL, verdict: "ambiguous")
+      fake_result(main, records[1], QtclusteringBoundary::PRIMARY_MODEL, confidence: "medium")
+      fake_result(main, records[2], QtclusteringBoundary::PRIMARY_MODEL, verdict: "invalid")
+      assert_equal records.first(2).map { |r| r.fetch("id") }, QtclusteringBoundary.review_selection(main).map { |r| r.fetch("program_id") }
+      TimingAudit.derive_inventory(parent_root: main, output_dir: independent,
+        ids: records.last(2).map { |r| r.fetch("id") }, provenance: {})
+      YAML.safe_load_file(File.join(main, "manifest.yaml")).fetch("retained_artifacts").each_key do |name|
+        next if File.exist?(File.join(independent, name))
+        FileUtils.cp(File.join(main, name), File.join(independent, name))
+      end
+      manifest_path = File.join(independent, "manifest.yaml")
+      manifest = YAML.safe_load_file(manifest_path)
+      manifest.fetch("retained_artifacts").keys.each do |name|
+        manifest["retained_artifacts"][name] = TimingAudit.sha256_file(File.join(independent, name))
+      end
+      write(manifest_path, YAML.dump(manifest))
+      fake_result(independent, records[2], QtclusteringBoundary::PRIMARY_MODEL)
+      fake_result(independent, records[3], QtclusteringBoundary::PRIMARY_MODEL)
+      selected = QtclusteringBoundary.review_selection(main, independent_root: independent)
+      assert_equal records.first(3).map { |r| r.fetch("id") }, selected.map { |r| r.fetch("program_id") }
+      assert_equal ["independent_review_disagreement_or_uncertainty"], selected.last.fetch("reasons")
+      fake_result(independent, records[3], QtclusteringBoundary::PRIMARY_MODEL, confidence: "medium")
+      assert_equal 4, QtclusteringBoundary.review_selection(main, independent_root: independent).size
+    end
+  end
+
+  def test_retained_reviews_are_hash_bound_and_new_unselected_results_are_rejected
+    fixture do |args, _|
+      main = args.fetch(:output_dir)
+      review = "#{main}-review"
+      capture_io { QtclusteringBoundary::Builder.new(**args).run }
+      records = TimingAudit.load_jsonl(File.join(main, "inventory.jsonl"))
+      records.each { |record| fake_result(main, record, QtclusteringBoundary::PRIMARY_MODEL) }
+      QtclusteringBoundary.prepare_review(main_root: main, output_dir: review)
+      fake_result(review, records.first, QtclusteringBoundary::ADJUDICATION_MODEL)
+      capture_io { QtclusteringBoundary.run_review(main_root: main, output_dir: review, scope: "full") }
+      capture_io { QtclusteringBoundary.run_review(main_root: main, output_dir: review, scope: "full") }
+      fake_result(review, records.first, QtclusteringBoundary::ADJUDICATION_MODEL, verdict: "invalid")
+      error = assert_raises(RuntimeError) { QtclusteringBoundary.finalize(main_root: main, review_root: review) }
+      assert_match(/Retained review changed/, error.message)
+      fake_result(review, records.first, QtclusteringBoundary::ADJUDICATION_MODEL)
+      fake_result(review, records.last, QtclusteringBoundary::ADJUDICATION_MODEL)
+      error = assert_raises(RuntimeError) { QtclusteringBoundary.finalize(main_root: main, review_root: review) }
+      assert_match(/Unselected adjudication results/, error.message)
+      refute File.exist?(File.join(main, "final"))
+    end
+  end
+
+  def test_trial_invokes_only_its_uncertain_subset_and_missing_adjudication_blocks_finalization
+    fixture do |args, _|
+      main = args.fetch(:output_dir)
+      review = "#{main}-review"
+      args[:trial_size] = 2
+      capture_io { QtclusteringBoundary::Builder.new(**args).run }
+      records = TimingAudit.load_jsonl(File.join(main, "inventory.jsonl"))
+      trial = File.readlines(File.join(main, "trial-ids.txt"), chomp: true)
+      uncertain = records.find { |record| record.fetch("id") == trial.first }
+      outside = records.find { |record| !trial.include?(record.fetch("id")) }
+      records.each { |record| fake_result(main, record, QtclusteringBoundary::PRIMARY_MODEL) }
+      [uncertain, outside].each { |record| fake_result(main, record, QtclusteringBoundary::PRIMARY_MODEL, verdict: "ambiguous") }
+      runner = Minitest::Mock.new
+      runner.expect(:run, nil)
+      constructor = lambda do |**options|
+        assert_equal [uncertain.fetch("id")], options.fetch(:only_ids)
+        assert_equal "trial", options.fetch(:scope)
+        runner
+      end
+      TimingAudit::AuditRunner.stub(:new, constructor) do
+        QtclusteringBoundary.run_review(main_root: main, output_dir: review, scope: "trial")
+      end
+      runner.verify
+      assert_raises(Errno::ENOENT) { QtclusteringBoundary.pilot_gate(main_root: main, review_root: review) }
+      QtclusteringBoundary.review_plan(main_root: main, review_root: review, scope: "full", create: true)
+      error = assert_raises(RuntimeError) { QtclusteringBoundary.finalize(main_root: main, review_root: review) }
+      assert_match(/coverage mismatch/, error.message)
     end
   end
 
@@ -235,9 +346,9 @@ class QtclusteringBoundaryTest < Minitest::Test
     TimingAudit.capture!("git", "-C", root, *args)
   end
 
-  def fake_result(root, record, model, verdict: "valid")
+  def fake_result(root, record, model, verdict: "valid", confidence: "high")
     id = record.fetch("id")
-    result = { "program_id" => id, "verdict" => verdict, "confidence" => "high",
+    result = { "program_id" => id, "verdict" => verdict, "confidence" => confidence,
       "issue_categories" => verdict == "valid" ? ["none"] : ["other"],
       "timed_region" => "Complete work", "start_synchronization" => "Joined", "stop_synchronization" => "Joined",
       "rank_aggregation" => "Not applicable", "reported_value" => "elapsed", "semantic_equivalence_basis" => "",

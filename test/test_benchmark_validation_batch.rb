@@ -31,6 +31,32 @@ class BenchmarkValidationBatchTest < Minitest::Test
     assert_raises(RuntimeError) { BenchmarkValidationBatch.canary_ids(ids, "test") }
   end
 
+  def test_explicit_fallback_only_replaces_missing_preferred_backend
+    ids = LocalEvaluation::PAR_TYPES.map { |backend| "black-scholes_test_#{backend}_r2" }
+    ids.delete("black-scholes_test_hybrid_r2")
+    ids.concat(%w[cholesky_test_hybrid_r10 cholesky_test_hybrid_r3
+      cholesky_test_omp_r1 cholesky_another_hybrid_r1 matmul_test_hybrid_r1])
+    selected = BenchmarkValidationBatch.canary_ids(ids.reverse, "test", fallback_benchmarks: %w[cholesky matmul])
+    assert_equal LocalEvaluation::PAR_TYPES.map { |backend|
+      backend == "hybrid" ? "cholesky_test_hybrid_r3" : "black-scholes_test_#{backend}_r2"
+    }, selected
+    assert_equal 4, selected.uniq.size
+    assert_empty selected - ids
+  end
+
+  def test_fallbacks_do_not_admit_other_models_or_unlisted_benchmarks
+    ids = LocalEvaluation::PAR_TYPES.map { |backend| "black-scholes_test_#{backend}_r1" }
+    ids.delete("black-scholes_test_hybrid_r1")
+    ids.concat(%w[cholesky_another_hybrid_r1 matmul_test_hybrid_r1])
+    assert_raises(RuntimeError) { BenchmarkValidationBatch.canary_ids(ids, "test", fallback_benchmarks: ["cholesky"]) }
+  end
+
+  def test_fallback_configuration_rejects_unknown_duplicate_or_preferred_benchmarks
+    [nil, "cholesky", ["unknown"], ["cholesky", "cholesky"], ["black-scholes"]].each do |fallbacks|
+      assert_raises(RuntimeError) { BenchmarkValidationBatch.canary_ids([], "test", fallback_benchmarks: fallbacks) }
+    end
+  end
+
   def test_inheritance_changes_only_binding_and_not_measurement_settings
     original = { "state" => "frozen", "frozen_at" => "old", "proposed_sha256" => "old",
       "cells" => { "hybrid" => { "floydwarshall" => { "args" => ["-n", "10240"], "timeout_seconds" => 47 } } },

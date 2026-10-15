@@ -80,15 +80,24 @@ module BenchmarkValidationBatch
     { valid: valid, corrected: corrected, unchanged: valid - corrected }
   end
 
-  def canary_ids(unchanged_ids, model)
+  def canary_ids(unchanged_ids, model, fallback_benchmarks: [])
+    unless fallback_benchmarks.is_a?(Array) &&
+           fallback_benchmarks == fallback_benchmarks.uniq &&
+           (fallback_benchmarks - (LocalEvaluation::BENCHMARKS - ["black-scholes"])).empty?
+      raise "Canary fallbacks must be distinct supported benchmarks other than black-scholes"
+    end
     LocalEvaluation::PAR_TYPES.map do |backend|
-      pattern = /\Ablack-scholes_#{Regexp.escape(model)}_#{backend}_r([1-9]\d*)\z/
-      candidates = unchanged_ids.filter_map do |id|
-        match = pattern.match(id)
-        [match[1].to_i, id] if match
+      selected = nil
+      (["black-scholes"] + fallback_benchmarks).each do |benchmark|
+        pattern = /\A#{Regexp.escape(benchmark)}_#{Regexp.escape(model)}_#{backend}_r([1-9]\d*)\z/
+        candidates = unchanged_ids.filter_map do |id|
+          match = pattern.match(id)
+          [match[1].to_i, id] if match
+        end
+        selected = candidates.min_by(&:first)
+        break if selected
       end
-      selected = candidates.min_by(&:first)
-      raise "No unchanged valid black-scholes canary for #{model}/#{backend}" unless selected
+      raise "No unchanged valid canary for #{model}/#{backend} among #{(["black-scholes"] + fallback_benchmarks).join(', ')}" unless selected
       selected.last
     end
   end
@@ -118,7 +127,7 @@ module BenchmarkValidationBatch
   end
 
   def prepare(run_dir:, baseline_config:, corrections:, corrected_validation:, original_backup:, canary_model:,
-              validation_failures: nil)
+              validation_failures: nil, canary_fallback_benchmarks: [])
     run_dir = File.realpath(run_dir)
     campaign = File.join(run_dir, "benchmark-campaign")
     raise "Campaign already exists" if File.exist?(campaign)
@@ -177,7 +186,7 @@ module BenchmarkValidationBatch
     original_only.each do |id|
       LocalEvaluation::BuildSupport.find_executable(File.join(run_dir, "validation", id), manifest.runs.fetch(id).fetch("benchmark"))
     end
-    canaries = canary_ids(original_only, canary_model)
+    canaries = canary_ids(original_only, canary_model, fallback_benchmarks: canary_fallback_benchmarks)
     raise "Canaries must all be unchanged valid programs" unless (canaries - original_only).empty?
     FileUtils.mkdir_p(campaign)
     seed = LocalEvaluation::CalibrationSeed.materialize!(run_dir: run_dir, source_path: baseline.data.fetch("seed_path"))
@@ -221,6 +230,11 @@ module BenchmarkValidationBatch
       "valid_programs" => valid_ids.size, "unchanged_programs" => original_only.size, "corrected_programs" => ids.size,
       "originally_valid_programs" => originally_valid_count, "excluded_validation_programs" => excluded_ids.size,
       "excluded_validation_ids" => excluded_ids,
+      "canary_selection" => {
+        "model" => canary_model, "preferred_benchmark" => "black-scholes",
+        "fallback_benchmarks" => canary_fallback_benchmarks, "selected_ids" => canaries,
+        "policy" => "Lowest unchanged valid repetition per backend, preferring black-scholes, then explicitly ordered fallbacks. All canary measurements are reused; measurement settings and benchmark eligibility are unchanged."
+      },
       "validation_policy" => "Original validation is immutable; explicitly adjudicated failed revalidations supersede earlier passes for eligibility and final validation totals, never as benchmark failures.",
       "warmups" => 1, "measurements" => BENCHMARK_COUNT,
       "artifacts" => artifacts.to_h { |name| [name, LocalEvaluation.sha256_file(File.join(campaign, name))] } }
@@ -370,11 +384,12 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--corrected-validation=PATH") { |v| options[:corrected_validation] = File.expand_path(v) }
     opts.on("--original-backup=PATH") { |v| options[:original_backup] = File.expand_path(v) }
     opts.on("--canary-model=MODEL") { |v| options[:canary_model] = v }
+    opts.on("--canary-fallback-benchmarks=LIST", Array, "Ordered fallback benchmarks when no unchanged black-scholes is eligible") { |v| options[:canary_fallback_benchmarks] = v }
     opts.on("--validation-failures=PATH", "Explicit user-approved correctness/output-contract failure dispositions") { |v| options[:validation_failures] = File.expand_path(v) }
   end.parse!
   required = command == "prepare" ? %i[run_dir baseline_config corrections corrected_validation original_backup canary_model] : %i[run_dir]
   abort "Usage: benchmark_validation_batch.rb prepare|run|status --run-dir=PATH [preparation options]" unless
     %w[prepare run status].include?(command) && ARGV.empty? &&
-    (options.keys - (command == "prepare" ? [:validation_failures] : [])).sort == required.sort
+    (options.keys - (command == "prepare" ? [:validation_failures, :canary_fallback_benchmarks] : [])).sort == required.sort
   BenchmarkValidationBatch.public_send(command, **options)
 end

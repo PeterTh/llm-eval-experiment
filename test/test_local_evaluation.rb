@@ -44,6 +44,22 @@ class LocalEvaluationTest < Minitest::Test
     assert_match(/Duplicate run ID/, error.message)
   end
 
+  def test_pipeline_snapshot_binds_generation_recovery_dependencies
+    snapshot = LocalEvaluation.pipeline_source_snapshot
+    %w[lib/claude_generation_recovery.rb lib/experiment_selection.rb].each do |relative|
+      assert_equal LocalEvaluation.sha256_file(File.join(snapshot.fetch("root"), relative)), snapshot.fetch("files").fetch(relative)
+    end
+    snapshot.fetch("files").each_key do |relative|
+      target = File.join(@tmp, relative)
+      FileUtils.mkdir_p(File.dirname(target))
+      FileUtils.cp(File.join(snapshot.fetch("root"), relative), target)
+    end
+    assert_equal snapshot.fetch("sha256"), LocalEvaluation.pipeline_source_snapshot(@tmp).fetch("sha256")
+    path = File.join(@tmp, "lib/claude_generation_recovery.rb")
+    File.write(path, File.read(path) + "\n# changed recovery parser\n")
+    refute_equal snapshot.fetch("sha256"), LocalEvaluation.pipeline_source_snapshot(@tmp).fetch("sha256")
+  end
+
   def test_manifest_refuses_missing_malformed_and_mismatched_digest_sidecars
     path = File.join(@tmp, "evaluation_manifest.yaml")
     LocalEvaluation.atomic_yaml(path, { "schema_version" => LocalEvaluation::SCHEMA_VERSION, "runs" => {} })

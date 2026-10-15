@@ -160,6 +160,7 @@ module LocalEvaluation
     fixed = %w[
       general.rb general_evaluation.rb local_benchmark_seed.yml local_evaluation.rb
       local_gpu_rank_wrapper.rb validation_class.rb validation_helper.rb lib/codex_usage.rb
+      lib/claude_generation_recovery.rb lib/experiment_selection.rb
     ]
     files = (fixed + ["lib/local_evaluation.rb"] +
              Dir[File.join(root, "lib", "local_evaluation", "**", "*.rb")].map { |path| path.delete_prefix("#{root}/") })

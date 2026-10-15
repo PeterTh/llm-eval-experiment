@@ -22,26 +22,40 @@ module ClaudeGenerationObservation
     recovery = ClaudeGenerationRecovery.read(directory, batch: batch)
     init, result = nil, nil
     notification_seen, notification_result_pending = false, false
+    pending_notification_seen, queued_notifications = false, {}
     assistant_models, calls, retries, seen = [], [], [], {}
     File.foreach(paths.fetch("output.txt")) do |line|
       event = JSON.parse(line) rescue next
       next unless event.is_a?(Hash)
       if event["type"] == "system" && event["subtype"] == "init"
         if init
-          same = event.reject { |key, _| key == "uuid" } == init.reject { |key, _| key == "uuid" }
+          same = event.reject { |key, _| %w[uuid cwd].include?(key) } == init.reject { |key, _| %w[uuid cwd].include?(key) } &&
+            same_workspace_cwd?(init["cwd"], event["cwd"])
           raise Invalid, "Session initialization changed" unless same
-          unless result && notification_seen && !notification_result_pending
-            raise Invalid, "Repeated initialization without a completed-turn task notification"
+          unless result && !notification_result_pending
+            raise Invalid, "Repeated initialization without a completed turn"
           end
           notification_result_pending = true
+          pending_notification_seen = notification_seen
         else
           init = event
         end
       elsif event["type"] == "system" && event["subtype"] == "task_notification"
-        notification_seen = true if result && event["session_id"] == init&.fetch("session_id")
+        if init && event["session_id"] == init.fetch("session_id")
+          notification_seen = true if result
+          run_id = event["run_id"]
+          queued_notifications[run_id] = true if run_id.is_a?(String) && !run_id.empty?
+        end
       elsif event["type"] == "result"
         if notification_result_pending
           verify_notification_continuation!(result, event, model: model, session: init.fetch("session_id"))
+          # Notifications may be queued before the preceding result. In that
+          # order, require the native origin to name an observed same-session task.
+          run_id = event.dig("origin", "runId")
+          matched = run_id.is_a?(String) && queued_notifications.delete(run_id)
+          unless matched || (run_id.nil? && pending_notification_seen)
+            raise Invalid, "Continuation has no matching task notification"
+          end
           notification_result_pending = false
         end
         result = event
@@ -119,6 +133,16 @@ module ClaudeGenerationObservation
       "reported_cost_usd" => result["total_cost_usd"])
   rescue KeyError, JSON::ParserError, ArgumentError, ClaudeGenerationRecovery::Invalid => e
     raise Invalid, e.message
+  end
+
+  # A background shell can leave Claude's current directory inside the original
+  # observation workspace. That is not a new session or a capability change.
+  # Compare against the original root on every notification, never a moving root.
+  def same_workspace_cwd?(original, current)
+    return true if original == current
+    return false unless [original, current].all? { |path| path.is_a?(String) && path.start_with?("/") }
+    root, candidate = File.expand_path(original), File.expand_path(current)
+    root != "/" && (candidate == root || candidate.start_with?(root + "/"))
   end
 
   # Claude Code may re-emit init in the same process after a background shell

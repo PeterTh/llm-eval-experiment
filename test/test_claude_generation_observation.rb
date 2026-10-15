@@ -126,6 +126,62 @@ class ClaudeGenerationObservationTest < Minitest::Test
     assert_raises(ClaudeGenerationObservation::Invalid) { read }
   end
 
+  def test_notification_cwd_may_move_inside_original_workspace_without_changing_accounting
+    @init["cwd"] = "/evals/batch/program"
+    notification_continuation
+    @events[3]["cwd"] = "/evals/batch/program/qtclustering"
+    report = read
+    assert_equal "completed", report.fetch("outcome")
+    assert_equal 107, report.fetch("total_tokens")
+    assert_equal 10.4, report.fetch("api_seconds")
+    assert_equal 12.34, report.fetch("total_seconds")
+    @events[3]["cwd"] = "/evals/batch/program/build/../qtclustering"
+    assert_equal report.reject { |key, _| key == "sha256" }, read.reject { |key, _| key == "sha256" }
+  end
+
+  def test_notification_cwd_cannot_escape_original_workspace_or_change_other_fields
+    @init["cwd"] = "/evals/batch/program"
+    notification_continuation
+    ["/evals/batch/sibling", "/evals/batch/program-other/subdir", "/evals/batch/program/../sibling", "relative/path", nil].each do |cwd|
+      @events[3]["cwd"] = cwd
+      assert_raises(ClaudeGenerationObservation::Invalid) { read }
+    end
+    @events[3]["cwd"] = "/evals/batch/program/qtclustering"
+    @events[3]["permissionMode"] = "changed"
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+    @events[3]["permissionMode"] = @init["permissionMode"]
+    @result.delete("origin")
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+  end
+
+  def queued_notification_continuation
+    notification_continuation
+    @events[2]["run_id"] = "background-run"
+    @result["origin"]["runId"] = "background-run"
+    @events[1], @events[2] = @events[2], @events[1]
+  end
+
+  def test_notification_queued_before_result_is_bound_to_native_origin
+    queued_notification_continuation
+    report = read
+    assert_equal "completed", report.fetch("outcome")
+    assert_equal 107, report.fetch("total_tokens")
+    assert_equal 10.4, report.fetch("api_seconds")
+    assert_equal 12.34, report.fetch("total_seconds")
+  end
+
+  def test_queued_notification_cannot_substitute_unrelated_task_or_session
+    queued_notification_continuation
+    @events[1]["run_id"] = "unrelated-task"
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+    @events[1]["run_id"] = "background-run"
+    @events[1]["session_id"] = "other-session"
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+    @events[1]["session_id"] = "session"
+    @result["origin"].delete("runId")
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+  end
+
   def test_continuation_cannot_reset_counters_or_hide_a_previous_terminal_error
     notification_continuation
     @result["modelUsage"][@model]["outputTokens"] = 7

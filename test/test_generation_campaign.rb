@@ -1,8 +1,10 @@
 require "minitest/autorun"
 require "tmpdir"
 require_relative "../tools/generation_campaign"
+require_relative "support/claude_recovery_fixture"
 
 class GenerationCampaignTest < Minitest::Test
+  include ClaudeRecoveryFixture
   class SimulatedCampaign < GenerationCampaign
     attr_accessor :produce, :git_responses
     attr_reader :launched, :committed, :git_calls, :cleaned
@@ -107,6 +109,20 @@ class GenerationCampaignTest < Minitest::Test
     refute Dir.exist?(File.join(@results, @ids[2]))
   end
 
+  def test_recovered_completed_observation_is_reused_without_regeneration
+    gate
+    directory = File.join(@results, @ids[1])
+    write_recovered_observation(directory, model: "claude-opus-5-5", version: "2.1.287", batch: @batch)
+    original = Dir[File.join(directory, "*")].to_h { |path| [path, File.binread(path)] }
+    capture_io { @campaign.run }
+    assert_equal 1, @campaign.launched.size
+    assert_equal [@ids[2]], @campaign.cleaned
+    original.each { |path, bytes| assert_equal bytes, File.binread(path) }
+    assert_equal 3, progress.fetch("completed")
+    recovered = JSON.parse(File.read(File.join(@root, "observations", "#{@ids[1]}.json")))
+    assert recovered.fetch("generation_time_recovered")
+  end
+
   def test_existing_incomplete_or_modified_output_is_never_overwritten
     gate
     FileUtils.mkdir_p(File.join(@results, @ids[1]))
@@ -200,6 +216,7 @@ class GenerationCampaignTest < Minitest::Test
     @ids.each do |id|
       directory = record(id)
       File.write(File.join(directory, "usage.txt"), "retained usage")
+      write_recovered_observation(directory, model: "claude-opus-5-5", version: "2.1.287", batch: @batch) if id == @ids[1]
       File.write(File.join(directory, "main.cpp"), "int main() {}")
       FileUtils.mkdir_p(File.join(directory, "build"))
       File.write(File.join(directory, "build", "artifact.txt"), "reproducible build artifact")
@@ -208,7 +225,8 @@ class GenerationCampaignTest < Minitest::Test
     File.write(File.join(repository, "unrelated.cpp"), "user work")
     GenerationCampaign.new(@root).commit_outputs
     committed = git.call("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").lines.map(&:strip)
-    assert_equal 18, committed.size
+    assert_equal 19, committed.size
+    assert_includes committed, "#{@batch}/#{@ids[1]}/generation-recovery.txt"
     assert committed.all? { |p| p.start_with?("#{@batch}/") }
     refute committed.any? { |p| p.include?("/build/") || p.end_with?("/binary") }
     assert_equal "?? unrelated.cpp\n", git.call("status", "--porcelain", "--", "unrelated.cpp")

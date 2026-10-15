@@ -9,6 +9,7 @@ module LocalEvaluation
       original_source_url corrected_source_url source_correction_amendment_sha256
       raw_api_time raw_total_time agent_retry_count agent_retry_backoff_seconds
       reasoning_output_tokens cache_write_input_tokens legacy_reported_tokens token_usage_source token_usage_session_id
+      generation_time_source generation_time_recovered wrapper_exit_status_available generation_recovery_sha256
     ].freeze
 
     def self.prepare(run_dir:, exact_id: nil, filter: nil, dry_run: false)
@@ -295,7 +296,9 @@ module LocalEvaluation
        result.raw_api_time, result.raw_total_time,
        result.agent_retry_count, result.agent_retry_backoff_seconds,
        result.reasoning_output_tokens, result.cache_write_input_tokens, result.legacy_reported_tokens,
-       result.token_usage_source, result.token_usage_session_id]
+       result.token_usage_source, result.token_usage_session_id,
+       result.generation_time_source, result.generation_time_recovered,
+       result.wrapper_exit_status_available, result.generation_recovery_sha256]
     end
     private_class_method :aggregate_row
   end

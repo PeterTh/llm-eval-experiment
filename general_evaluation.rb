@@ -15,6 +15,7 @@ class AggregateEvaluation
   attr_accessor :token_usage_source, :token_usage_session_id
   attr_accessor :api_time, :total_time
   attr_accessor :raw_api_time, :raw_total_time, :agent_retry_count, :agent_retry_backoff_seconds
+  attr_accessor :generation_time_source, :generation_time_recovered, :wrapper_exit_status_available, :generation_recovery_sha256
   attr_accessor :code_additions, :code_deletions
   attr_accessor :non_whitelisted_dependencies
   attr_accessor :validation_status, :validation_err_string
@@ -42,6 +43,10 @@ class AggregateEvaluation
     @raw_total_time = nil
     @agent_retry_count = 0
     @agent_retry_backoff_seconds = 0.0
+    @generation_time_source = nil
+    @generation_time_recovered = false
+    @wrapper_exit_status_available = nil
+    @generation_recovery_sha256 = nil
     @code_additions = nil
     @code_deletions = nil
     @non_whitelisted_dependencies = nil

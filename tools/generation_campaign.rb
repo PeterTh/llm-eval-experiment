@@ -50,7 +50,7 @@ class GenerationCampaign
         effort: profile.fetch("reasoning_effort"), version: @manifest.fetch("codex_version"))
     else
       ClaudeGenerationObservation.read(File.join(@results, id), **arguments, model: @manifest.fetch("invoked_model"),
-        version: @manifest.fetch("claude_version"))
+        version: @manifest.fetch("claude_version"), batch: @batch)
     end
     path = File.join(@observations, "#{id}.json")
     raise "Completed observation changed: #{id}" if File.file?(path) && JSON.parse(File.read(path)) != report
@@ -233,6 +233,7 @@ class GenerationCampaign
     @ids.each do |id|
       required = %w[output.txt timing.txt instruction.txt process-status.txt]
       required << "usage.txt" if @harness == "claude"
+      required << ClaudeGenerationRecovery::FILENAME if File.file?(File.join(@results, id, ClaudeGenerationRecovery::FILENAME))
       required.each do |name|
         raise "Required metadata ignored: #{id}/#{name}" unless staged.include?("#{@batch}/#{id}/#{name}")
       end

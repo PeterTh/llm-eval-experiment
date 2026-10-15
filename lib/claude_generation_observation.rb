@@ -2,6 +2,7 @@
 require "json"
 require "digest"
 require_relative "experiment_selection"
+require_relative "claude_generation_recovery"
 
 # Read completed generation records only: never compile, execute, or grade the program.
 module ClaudeGenerationObservation
@@ -11,13 +12,14 @@ module ClaudeGenerationObservation
     "cache_read_input_tokens" => "cacheReadInputTokens", "cache_creation_input_tokens" => "cacheCreationInputTokens" }.freeze
   module_function
 
-  def read(directory, model:, version:, timeout_seconds: 14400, baseline: nil)
+  def read(directory, model:, version:, timeout_seconds: 14400, baseline: nil, batch: nil)
     duration = ExperimentSelection.completed_duration(directory)
     raise Invalid, "Observation has no completion record" unless duration
     paths = %w[output.txt timing.txt instruction.txt process-status.txt].to_h { |name| [name, File.join(directory, name)] }
     paths.each { |name, path| raise Invalid, "Missing #{name}" unless File.file?(path) && !File.zero?(path) }
     process = JSON.parse(File.read(paths.fetch("process-status.txt")))
     raise Invalid, "Generation budget differs" unless process.fetch("timeout_seconds") == timeout_seconds
+    recovery = ClaudeGenerationRecovery.read(directory, batch: batch)
     init, result = nil, nil
     notification_seen, notification_result_pending = false, false
     assistant_models, calls, retries, seen = [], [], [], {}
@@ -78,7 +80,7 @@ module ClaudeGenerationObservation
     end
     raise Invalid, "Missing terminal result without a full-budget timeout" unless result
     raise Invalid, "Session identity differs" unless result["session_id"] == init["session_id"]
-    raise Invalid, "Generation process failed" unless process["exit_status"] == 0 && process["term_signal"].nil?
+    raise Invalid, "Generation process failed" unless recovery || (process["exit_status"] == 0 && process["term_signal"].nil?)
     raise Invalid, "Terminal error requires investigation" unless result["is_error"] == false && result["subtype"] == "success"
     raise Invalid, "Quota termination requires retry" if result["rate_limits"].is_a?(Hash)
     raise Invalid, "Subagents were spawned" unless result.fetch("subagent_stats", {}).fetch("spawned", 0) == 0
@@ -105,13 +107,17 @@ module ClaudeGenerationObservation
     backoff = retry_ms.sum / 1000.0
     raise Invalid, "Retry duration exceeds elapsed time" unless backoff <= duration && backoff <= api_ms / 1000.0
     inclusive_input = counts.fetch("input_tokens") + counts.fetch("cache_read_input_tokens") + counts.fetch("cache_creation_input_tokens")
+    if recovery
+      report.merge!(ClaudeGenerationRecovery.summary(recovery))
+      report.fetch("sha256")[ClaudeGenerationRecovery::FILENAME] = recovery.fetch("generation_recovery_sha256")
+    end
     report.merge("outcome" => "completed", "usage_available" => true, "token_counts" => counts,
       "inclusive_input_tokens" => inclusive_input, "total_tokens" => inclusive_input + counts.fetch("output_tokens"),
       "thinking_tokens" => usage["thinkingTokens"], "raw_api_seconds" => api_ms / 1000.0,
       "retry_count" => retry_ms.size, "retry_backoff_seconds" => backoff,
       "total_seconds" => (duration - backoff).round(6), "api_seconds" => (api_ms / 1000.0 - backoff).round(6),
       "reported_cost_usd" => result["total_cost_usd"])
-  rescue KeyError, JSON::ParserError, ArgumentError => e
+  rescue KeyError, JSON::ParserError, ArgumentError, ClaudeGenerationRecovery::Invalid => e
     raise Invalid, e.message
   end
 

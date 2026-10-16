@@ -23,6 +23,7 @@ module ClaudeGenerationObservation
     init, result = nil, nil
     notification_seen, notification_result_pending = false, false
     pending_notification_seen, queued_notifications = false, {}
+    queued_legacy_notification = false
     assistant_models, calls, retries, seen = [], [], [], {}
     File.foreach(paths.fetch("output.txt")) do |line|
       event = JSON.parse(line) rescue next
@@ -45,17 +46,26 @@ module ClaudeGenerationObservation
           notification_seen = true if result
           run_id = event["run_id"]
           queued_notifications[run_id] = true if run_id.is_a?(String) && !run_id.empty?
+          # CLI 2.1.287 has task_id but no run_id/origin.runId. Keep only a
+          # completed same-session notification with no intervening tool call.
+          if init["claude_code_version"] == "2.1.287" && run_id.nil? &&
+              event["task_id"].is_a?(String) && !event["task_id"].empty? &&
+              %w[completed failed].include?(event["status"])
+            queued_legacy_notification = true
+          end
         end
       elsif event["type"] == "result"
         if notification_result_pending
           verify_notification_continuation!(result, event, model: model, session: init.fetch("session_id"))
-          # Notifications may be queued before the preceding result. In that
-          # order, require the native origin to name an observed same-session task.
+          # Notifications may be queued before the preceding result. Match the
+          # native task ID when available; the verified legacy format above has
+          # no correlation ID and permits only its unconsumed notification.
           run_id = event.dig("origin", "runId")
           matched = run_id.is_a?(String) && queued_notifications.delete(run_id)
-          unless matched || (run_id.nil? && pending_notification_seen)
+          unless matched || (run_id.nil? && (pending_notification_seen || queued_legacy_notification))
             raise Invalid, "Continuation has no matching task notification"
           end
+          queued_legacy_notification = false
           notification_result_pending = false
         end
         result = event
@@ -64,7 +74,10 @@ module ClaudeGenerationObservation
         observed = event.dig("message", "model")
         assistant_models << observed if observed && observed != "<synthetic>"
         Array(event.dig("message", "content")).each do |content|
-          calls << content["name"] if content.is_a?(Hash) && content["type"] == "tool_use"
+          if content.is_a?(Hash) && content["type"] == "tool_use"
+            calls << content["name"]
+            queued_legacy_notification = false
+          end
         end
       elsif event["type"] == "system" && event["subtype"] == "api_retry"
         retries << event

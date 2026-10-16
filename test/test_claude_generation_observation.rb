@@ -194,6 +194,56 @@ class ClaudeGenerationObservationTest < Minitest::Test
     assert_raises(ClaudeGenerationObservation::Invalid) { read }
   end
 
+  def legacy_queued_notification_continuation
+    notification_continuation
+    @events[2]["status"] = "completed"
+    @events[1], @events[2] = @events[2], @events[1]
+    @init["cwd"] = "/evals/batch/program"
+    @events[3]["cwd"] = "/evals/batch/program/qtclustering"
+  end
+
+  def test_legacy_notification_queued_before_result_preserves_exact_totals
+    legacy_queued_notification_continuation
+    report = read
+    assert_equal "completed", report.fetch("outcome")
+    assert_equal 107, report.fetch("total_tokens")
+    assert_equal 10.4, report.fetch("api_seconds")
+    assert_equal 12.34, report.fetch("total_seconds")
+  end
+
+  def test_legacy_queued_notification_requires_same_session_completed_task_without_run_id
+    legacy_queued_notification_continuation
+    notification = @events[1]
+    [{ "session_id" => "other" }, { "task_id" => nil }, { "task_id" => "" },
+     { "status" => "running" }, { "run_id" => "modern-id" }].each do |change|
+      @events[1] = notification.merge(change)
+      assert_raises(ClaudeGenerationObservation::Invalid) { read }
+    end
+    @events[1] = notification
+    @result["origin"]["runId"] = "unmatched-modern-id"
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+  end
+
+  def test_legacy_queued_notification_is_not_reused_after_a_tool_call
+    legacy_queued_notification_continuation
+    @events.insert(2, { "type" => "assistant", "message" => { "model" => @model,
+      "content" => [{ "type" => "tool_use", "name" => "Bash" }] } })
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+  end
+
+  def test_legacy_queued_notification_cannot_authorize_a_second_continuation
+    legacy_queued_notification_continuation
+    @events += [@events[3].merge("uuid" => "third-init"), JSON.parse(JSON.generate(@result))]
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+  end
+
+  def test_legacy_fallback_is_limited_to_the_verified_cli_version
+    legacy_queued_notification_continuation
+    @init["claude_code_version"] = "2.1.296"
+    @events[3]["claude_code_version"] = "2.1.296"
+    assert_raises(ClaudeGenerationObservation::Invalid) { read(version: "2.1.296") }
+  end
+
   def test_notification_continuation_requires_its_own_terminal_record
     notification_continuation
     @events.pop

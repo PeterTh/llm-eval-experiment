@@ -185,7 +185,8 @@ EVAL_STAGING_DIR = "/home/#{EVAL_USER}/.residue"
 # deliberately not one of the llm_para_* experiment data paths
 EVAL_RESIDUE_ROOT = File.join(Dir.home, "llm_para_agent_residue")
 
-CLAUDE_USAGE_MAX_UTILIZATION = 90   # percent; wait if any usage window is at or above this
+CLAUDE_USAGE_MAX_UTILIZATION = 90   # percent; session and unrecognized usage windows
+CLAUDE_WEEKLY_USAGE_MAX_UTILIZATION = 95 # percent; keep a 5% reserve in weekly windows
 CLAUDE_USAGE_RECHECK_SECONDS = 300  # re-poll cadence while waiting for a window to reset
 CLAUDE_USAGE_WAIT_MARGIN = 60       # seconds added after a window's reset before re-polling
 CLAUDE_MAX_RETRIES = 5              # attempts per configuration before giving up
@@ -416,6 +417,15 @@ def claude_limit_applies?(limit, family)
     name.to_s.downcase.include?(family)
 end
 
+# Weekly capacity needs a smaller reserve than the short session window. Unknown
+# window kinds retain the conservative session threshold; model scope is unchanged.
+def claude_usage_max_utilization(window_name: nil, limit: nil)
+    weekly = window_name.to_s.match?(/\Aseven_day(?:_|\z)/) ||
+             (limit.is_a?(Hash) && (limit["group"] == "weekly" ||
+               %w[weekly_all weekly_scoped].include?(limit["kind"])))
+    weekly ? CLAUDE_WEEKLY_USAGE_MAX_UTILIZATION : CLAUDE_USAGE_MAX_UTILIZATION
+end
+
 # Time to wait until, or nil when nothing applicable to this model is exhausted
 def claude_usage_blocked_until(snapshot, family = nil)
     return nil unless snapshot.is_a?(Hash)
@@ -427,23 +437,23 @@ def claude_usage_blocked_until(snapshot, family = nil)
         window = snapshot[name]
         next unless window.is_a?(Hash)
         next unless !window["locked_reason"].nil? ||
-                    (!window["utilization"].nil? && window["utilization"].to_f >= CLAUDE_USAGE_MAX_UTILIZATION)
+                    (!window["utilization"].nil? && window["utilization"].to_f >= claude_usage_max_utilization(window_name: name))
         claude_parse_time(window["resets_at"]) || fallback
     end
     limits = snapshot["limits"]
     if limits.is_a?(Array) && !limits.empty?
         resets += limits.filter_map do |limit|
             next unless limit.is_a?(Hash)
-            next unless !limit["percent"].nil? && limit["percent"].to_f >= CLAUDE_USAGE_MAX_UTILIZATION
+            next unless !limit["percent"].nil? && limit["percent"].to_f >= claude_usage_max_utilization(limit: limit)
             next unless claude_limit_applies?(limit, family)
             claude_parse_time(limit["resets_at"]) || fallback
         end
     else
         # no normalized view available, so fall back to the top-level windows; these carry no model
         # scope, so this over-blocks rather than under-blocks
-        resets += claude_usage_windows(snapshot).values.filter_map do |window|
+        resets += claude_usage_windows(snapshot).filter_map do |name, window|
             next unless !window["locked_reason"].nil? ||
-                        (!window["utilization"].nil? && window["utilization"].to_f >= CLAUDE_USAGE_MAX_UTILIZATION)
+                        (!window["utilization"].nil? && window["utilization"].to_f >= claude_usage_max_utilization(window_name: name))
             claude_parse_time(window["resets_at"]) || fallback
         end
     end
@@ -464,7 +474,7 @@ def wait_for_claude_usage!(family)
         return snapshot if blocked_until.nil?
         remaining = blocked_until - Time.now + CLAUDE_USAGE_WAIT_MARGIN
         wait = remaining <= 0 ? CLAUDE_USAGE_RECHECK_SECONDS : [remaining, CLAUDE_USAGE_RECHECK_SECONDS].min
-        puts " - Usage for #{family || "this model"} at or above #{CLAUDE_USAGE_MAX_UTILIZATION}%, resets at #{blocked_until}, waiting #{wait.round}s"
+        puts " - Usage guard for #{family || "this model"} (weekly >=#{CLAUDE_WEEKLY_USAGE_MAX_UTILIZATION}%, session/other >=#{CLAUDE_USAGE_MAX_UTILIZATION}%), resets at #{blocked_until}, waiting #{wait.round}s"
         sleep(wait)
     end
 end
@@ -711,7 +721,7 @@ elsif HARNESS == :claude
                 puts "  limit #{limit["kind"]} (#{scope}): #{limit["percent"]}% (resets #{claude_parse_time(limit["resets_at"]) || "unknown"})"
             end
         end
-        puts "Runs wait at #{CLAUDE_USAGE_MAX_UTILIZATION}% or above, but only for the limits that govern the model being run"
+        puts "Runs wait at #{CLAUDE_WEEKLY_USAGE_MAX_UTILIZATION}% weekly or #{CLAUDE_USAGE_MAX_UTILIZATION}% session/other usage, but only for the limits that govern the model being run"
         MODELS_TO_EVAL.each do |model|
             family = claude_model_family(MODEL_MAPPING[model] || model)
             governing = limits.select { |limit| limit.is_a?(Hash) && claude_limit_applies?(limit, family) }

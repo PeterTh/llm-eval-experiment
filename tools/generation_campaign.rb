@@ -6,6 +6,7 @@ require "time"
 require "shellwords"
 require_relative "../lib/claude_generation_observation"
 require_relative "../lib/codex_generation_observation"
+require_relative "../lib/opencode_generation_observation"
 require_relative "../lib/generation_cleanup"
 
 # Serial orchestration around experiment.rb, not a replacement generation harness.
@@ -15,7 +16,7 @@ class GenerationCampaign
     @root = File.realpath(root)
     @manifest = JSON.parse(File.read(File.join(@root, "campaign.json")))
     @harness = @manifest.fetch("harness", "claude")
-    raise "Unsupported generation harness" unless %w[claude codex].include?(@harness)
+    raise "Unsupported generation harness" unless %w[claude codex opencode].include?(@harness)
     @ids = File.readlines(File.join(@root, "run-ids.txt"), chomp: true)
     raise "Invalid campaign IDs" unless @ids.size == @manifest.fetch("expected_runs") && @ids.uniq == @ids && @ids.all? { |id| id.match?(/\A[a-zA-Z0-9_.-]+\z/) }
     @batch = @manifest.fetch("campaign_id")
@@ -25,10 +26,10 @@ class GenerationCampaign
     unless !@preflight_ids.empty? && @preflight_ids.uniq == @preflight_ids && (@preflight_ids - @ids).empty?
       raise "Invalid preflight selection"
     end
-    if @harness == "codex"
+    if %w[codex opencode].include?(@harness)
       models = @manifest.fetch("models")
-      raise "Codex model scope differs" unless @ids.map { |id| id.split("_")[1] }.uniq.sort == models.keys.sort
-      raise "Every Codex profile needs a preflight" unless @preflight_ids.map { |id| id.split("_")[1] }.uniq.sort == models.keys.sort
+      raise "Model scope differs" unless @ids.map { |id| id.split("_")[1] }.uniq.sort == models.keys.sort
+      raise "Every profile needs a preflight" unless @preflight_ids.map { |id| id.split("_")[1] }.uniq.sort == models.keys.sort
     end
     @observations = File.join(@root, "observations")
     FileUtils.mkdir_p(@observations)
@@ -48,6 +49,10 @@ class GenerationCampaign
       profile = @manifest.fetch("models").fetch(id.split("_")[1])
       CodexGenerationObservation.read(File.join(@results, id), **arguments, model: profile.fetch("model"),
         effort: profile.fetch("reasoning_effort"), version: @manifest.fetch("codex_version"))
+    elsif @harness == "opencode"
+      profile = @manifest.fetch("models").fetch(id.split("_")[1])
+      OpenCodeGenerationObservation.read(File.join(@results, id), **arguments, model: profile.fetch("model"),
+        effort: profile.fetch("reasoning_effort"), version: @manifest.fetch("opencode_version"))
     else
       ClaudeGenerationObservation.read(File.join(@results, id), **arguments, model: @manifest.fetch("invoked_model"),
         version: @manifest.fetch("claude_version"), batch: @batch)
@@ -65,7 +70,7 @@ class GenerationCampaign
     existing = File.join(@root, "preflight-gate.json")
     value = { "accepted" => true,
       "criterion" => "Harness identity, isolation, metadata and production budget only; generated-program correctness is not a selection criterion." }
-    value.merge!(@harness == "codex" ? { "preflights" => reports } : { "preflight" => reports.first })
+    value.merge!(@harness != "claude" ? { "preflights" => reports } : { "preflight" => reports.first })
     raise "Preflight gate differs" if File.file?(existing) && JSON.parse(File.read(existing)) != value
     json("preflight-gate.json", value) unless File.file?(existing)
     reports.each { |report| puts "Preflight accepted: #{report.fetch('id')} (#{report.fetch('raw_total_seconds')}s)" }
@@ -121,7 +126,7 @@ class GenerationCampaign
     raise "Another controller is active" unless locked
     gate_data = JSON.parse(File.read(File.join(@root, "preflight-gate.json")))
     raise "Preflight not accepted" unless gate_data.fetch("accepted")
-    baselines = @harness == "codex" ? gate_data.fetch("preflights") : [gate_data.fetch("preflight")]
+    baselines = @harness != "claude" ? gate_data.fetch("preflights") : [gate_data.fetch("preflight")]
     raise "Preflight scope differs" unless baselines.map { |r| r.fetch("id") }.sort == @preflight_ids.sort
     unexpected = Dir.children(@results) - @ids
     raise "Unexpected result directories: #{unexpected.join(', ')}" unless unexpected.empty?
@@ -233,6 +238,7 @@ class GenerationCampaign
     @ids.each do |id|
       required = %w[output.txt timing.txt instruction.txt process-status.txt]
       required << "usage.txt" if @harness == "claude"
+      required.concat(OpenCodeHarness::EVIDENCE_FILES) if @harness == "opencode"
       required << ClaudeGenerationRecovery::FILENAME if File.file?(File.join(@results, id, ClaudeGenerationRecovery::FILENAME))
       required.each do |name|
         raise "Required metadata ignored: #{id}/#{name}" unless staged.include?("#{@batch}/#{id}/#{name}")

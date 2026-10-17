@@ -1,4 +1,5 @@
 require_relative "../codex_usage"
+require_relative "../opencode_generation_observation"
 require_relative "../claude_generation_recovery"
 
 module LocalEvaluation
@@ -186,6 +187,29 @@ module LocalEvaluation
 
     def parse_agent_metadata(id, info, result)
       codex_record = @codex_usage && @codex_usage[id]
+      if id.include?("-oc-")
+        evidence = JSON.parse(File.read(File.join(info.fetch("source_path"), "opencode-config.txt")))
+        record = OpenCodeGenerationObservation.read(info.fetch("source_path"), model: evidence.fetch("model"),
+          effort: evidence.fetch("reasoning_effort"), version: evidence.fetch("version"))
+        raise OpenCodeGenerationObservation::Invalid, "OpenCode aggregate identity differs" unless record.fetch("id") == id
+        counts = record.fetch("token_counts")
+        result.input_tokens = counts.fetch("input_tokens")
+        result.output_tokens = counts.fetch("output_tokens")
+        result.cached_tokens = counts.fetch("cached_input_tokens")
+        result.cache_write_input_tokens = counts.fetch("cache_write_input_tokens")
+        result.reasoning_output_tokens = counts.fetch("reasoning_output_tokens")
+        result.total_tokens = counts.fetch("total_tokens")
+        result.token_usage_source = record.fetch("usage_source")
+        result.token_usage_session_id = record.fetch("session_id")
+        result.raw_total_time = record.fetch("raw_total_seconds")
+        result.total_time = record.fetch("total_seconds")
+        result.agent_retry_backoff_seconds = record.fetch("retry_backoff_seconds")
+        result.agent_retry_count = record.fetch("retry_count")
+        # OpenCode does not expose a comparable API-only wall time. Do not
+        # substitute assistant-turn duration, which includes local tool work.
+        apply_diff_counts(id, info, result)
+        return
+      end
       timing_path = File.join(info["source_path"], "timing.txt")
       output_path = File.join(info["source_path"], "output.txt")
       if codex_record
@@ -274,9 +298,10 @@ module LocalEvaluation
       else
         warn_for(id, "No supported token-usage format found")
       end
-    rescue CodexUsage::Invalid, ClaudeGenerationRecovery::Invalid
+    rescue CodexUsage::Invalid, ClaudeGenerationRecovery::Invalid, OpenCodeGenerationObservation::Invalid
       raise
     rescue StandardError => e
+      raise OpenCodeGenerationObservation::Invalid, "OpenCode metadata failed for #{id}: #{e.class}: #{e.message}" if id.include?("-oc-")
       raise CodexUsage::Invalid, "Evidence-bound metadata failed for #{id}: #{e.class}: #{e.message}" if codex_record
       warn_for(id, "Agent metadata parse error: #{e.class}: #{e.message}")
       apply_diff_counts(id, info, result) if result.code_additions.nil?

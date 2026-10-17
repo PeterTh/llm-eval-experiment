@@ -91,7 +91,7 @@ versioned executable when pinning the CLI. Keep persistent campaign records unde
 on local storage, and the `llmtest` account free of unrelated sessions during runs.
 
 `tools/generation_campaign.rb preflight|gate|run|status CAMPAIGN_ROOT` provides serial
-supervision for a frozen Claude Code or Codex campaign. Its persistent `campaign.json` and
+supervision for a frozen Claude Code, Codex or OpenCode campaign. Its persistent `campaign.json` and
 `run-ids.txt` identify the pinned harness, executable, model, budget, paths and
 complete ordered selection. `preflight` runs the selected production observations;
 Codex campaigns require one per model/effort profile. `gate` accepts those observations based
@@ -125,6 +125,55 @@ generated-source repository, subject to its ignore rules; pre-existing staged
 work, nested repositories or missing metadata require operator review. Validation
 and benchmarking are separate subsequent stages. Freeze and retain the supervisor
 alongside the launch scripts before unattended use.
+
+### OpenCode harness comparison
+
+OpenCode uses its stock build-agent prompt and model-specific adapters, with the
+same task prompt and four-hour budget as the native harnesses. Local shell,
+read/edit, build and performance-testing capabilities remain available. Web tools,
+subagents, interactive questions, MCP, external plugins and inherited instructions
+or skills are disabled; bundled skills remain available. Fresh XDG directories
+isolate each observation. Updates and model-catalog refreshes are disabled.
+
+The pinned executable and supported subscription login are installed separately
+under the evaluation account, without replacing its existing OpenCode setup.
+Only `openai/gpt-6.1-sol`, medium, is enabled. Anthropic access stays deferred until
+a supported subscription-only OpenCode route is confirmed; API keys, paid-credit
+fallbacks, impersonation plugins and substituting Claude Code's agent loop are
+not permitted. OpenAI documents [OpenCode subscription sign-in](https://learn.chatgpt.com/docs/sign-in-with-chatgpt).
+
+`tools/prepare_opencode_campaign.rb` freezes committed method sources, the existing
+sequential baseline, the executable and the full ordered selection into a local
+runtime with persistent provenance under home. It verifies that Fable remains
+fully suspended. The predeclared production pilot covers black-scholes/OMP,
+nbody/CUDA, floydwarshall/MPI and qtclustering/hybrid, repetition 1. Accept it using
+the normal campaign controller, review the infrastructure evidence, then start
+`run` with the same campaign: all four observations are reused, independent of
+program correctness. The profile is `gpt-6.1-sol-oc-medium`; native profiles are
+not renamed or regenerated.
+
+The stock `serve` and `run --attach` commands use a fresh authenticated loopback
+server for each observation. A read-only subscriber retains native retry-status
+events omitted by the CLI's JSON output. Explicit session titles prevent helper
+title-model calls; compaction uses the selected model and effort. Transcript
+`step-finish` counters are cross-checked against native session metadata and
+summed once per request, including compaction. Input includes cached tokens and
+output includes reasoning tokens. Recorded scheduled retry waits are subtracted
+from elapsed time; API-only time is left unavailable, not inferred from turns
+that also contain local tool work. Setup inspection and final metadata export
+are outside task timing; server and CLI startup are inside it.
+
+Each output retains its source, `output.txt`, normal instruction/process/timing
+records, and four compact `opencode-*.txt` metadata files. Native message headers,
+accounting parts and lifecycle events are retained without repeating tool output
+and reasoning text already in the transcript. Databases, dependencies, binaries
+and credentials are excluded. Configuration and accounting anomalies stop further
+launches without repeating accepted observations.
+
+Comparisons reuse historical native-harness baselines with the same sequential
+input and budget. Provider model aliases are not immutable snapshots, and
+OpenCode's model-specific prompts and adapters are part of the tested harness;
+these are not contemporaneous, model-only causal comparisons.
 
 ### Main Pipeline (in execution order)
 

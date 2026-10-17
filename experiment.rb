@@ -1,8 +1,11 @@
 require "json"
 require "time"
+require "shellwords"
+require "tmpdir"
 
 require_relative "general"
 require_relative "lib/experiment_selection"
+require_relative "lib/opencode_harness"
 
 # General configuration / information
 
@@ -55,6 +58,7 @@ MODELS = {"claude-sonnet-4.5":1,
           "gpt-6-astra-medium":0,
           "gpt-6.1-sol-medium":0,
           "gpt-6.1-sol-xhigh":0,
+          "gpt-6.1-sol-oc-medium":0,
           "claude-fable-5-cc-medium":0,
           "claude-fable-5.1-cc-medium":0,
           "claude-haiku-5.5-cc-medium":0,
@@ -82,6 +86,7 @@ MODEL_MAPPING = {
     "gpt-6-astra-medium" => "gpt-6-astra",
     "gpt-6.1-sol-medium" => "gpt-6.1-sol",
     "gpt-6.1-sol-xhigh" => "gpt-6.1-sol",
+    "gpt-6.1-sol-oc-medium" => "openai/gpt-6.1-sol",
     "claude-fable-5-cc-medium" => "claude-fable-5",
     "claude-fable-5.1-cc-medium" => "claude-fable-5-1",
     "claude-haiku-5.5-cc-medium" => "claude-haiku-5-5",
@@ -106,6 +111,7 @@ REASONING_MAPPING = {
     "gpt-6-astra-medium" => "medium",
     "gpt-6.1-sol-medium" => "medium",
     "gpt-6.1-sol-xhigh" => "xhigh",
+    "gpt-6.1-sol-oc-medium" => "medium",
     "claude-fable-5-cc-medium" => "medium",
     "claude-fable-5.1-cc-medium" => "medium",
     "claude-haiku-5.5-cc-medium" => "medium",
@@ -123,6 +129,9 @@ PARAMS = "--allow-all-paths --allow-all-tools --no-ask-user --no-color --autopil
 
 PARAMS_CODEX = '--dangerously-bypass-approvals-and-sandbox --disable apps --disable auth_elicitation --disable browser_use --disable browser_use_external --disable browser_use_full_cdp_access --disable computer_use --disable daemon_auto_start --disable in_app_browser --disable in_app_updates --disable image_generation --disable memories --disable mentions_v2 --disable multi_agent --disable multi_agent_v2 --disable plugin_sharing --disable plugins --disable remote_plugin --disable skill_mcp_dependency_install --disable tool_call_mcp_elicitation --disable tool_suggest --disable workspace_dependencies'
 CODEX_BINARY = ENV.fetch("LLM_EVAL_CODEX_BINARY", "codex")
+OPENCODE_BINARY = ENV.fetch("LLM_EVAL_OPENCODE_BINARY", "/home/llmtest/.local/share/opencode-eval/versions/#{OpenCodeHarness::VERSION}/opencode")
+OPENCODE_AUTH_FILE = ENV.fetch("LLM_EVAL_OPENCODE_AUTH_FILE", "/home/llmtest/.local/share/opencode-eval/access/data/opencode/auth.json")
+OPENCODE_SUPPORT_SCRIPT = File.expand_path("tools/opencode_observation.rb", __dir__)
 
 # Claude Code flags. Full local access (like the other harnesses), but no web tools, no subagents,
 # no scheduling or remote triggers, no MCP servers, no settings/hooks/plugins from disk, and no
@@ -226,18 +235,19 @@ puts "Running in #{SMOKE ? "smoke test" : (TESTING ? "testing" : "production")} 
 #HARNESS = :copilot
 #HARNESS = :pi
 #HARNESS = :codex
-HARNESS = :claude
+HARNESS = ENV.fetch("LLM_EVAL_HARNESS", "claude").to_sym
+raise "Unknown harness" unless %i[copilot pi codex claude opencode].include?(HARNESS)
 
 if SMOKE
     # Enough to verify a harness end to end (agent edits the sources, transcript is well formed,
     # state reset and usage preflight behave) without spending a campaign's worth of quota.
     BENCHMARKS_TO_EVAL = ["black-scholes"]
-    MODELS_TO_EVAL = ["claude-sonnet-5.5-cc-medium"]
+    MODELS_TO_EVAL = ENV.fetch("LLM_EVAL_MODELS", "claude-sonnet-5.5-cc-medium").split(",")
     PAR_TYPES_TO_EVAL = [PAR_OMP]
     NUM_RUNS = 1
 elsif TESTING
     BENCHMARKS_TO_EVAL = BENCHMARKS # ["black-scholes", "nbody"]
-    MODELS_TO_EVAL = ["claude-sonnet-5.5-cc-medium"]
+    MODELS_TO_EVAL = ENV.fetch("LLM_EVAL_MODELS", "claude-sonnet-5.5-cc-medium").split(",")
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 else
@@ -246,7 +256,7 @@ else
     #MODELS_TO_EVAL = ["gpt-5.6-luna-xhigh", "gpt-5.6-luna-medium", "gpt-5.6-luna-low",
     #                  "gpt-5.6-terra-xhigh", "gpt-5.6-terra-medium", "gpt-5.6-terra-low",
     #                  "gpt-5.6-sol-xhigh", "gpt-5.6-sol-medium", "gpt-5.6-sol-low"]
-    MODELS_TO_EVAL = ["claude-sonnet-5.5-cc-medium"]
+    MODELS_TO_EVAL = ENV.fetch("LLM_EVAL_MODELS", "claude-sonnet-5.5-cc-medium").split(",")
     PAR_TYPES_TO_EVAL = PARALLELIZATION_TYPES
     NUM_RUNS = 5
 end
@@ -554,6 +564,7 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
     bench_path = prepare_folder(benchmark, model, par_type, run)
     instruction = build_instruction(benchmark, par_type)
     agent_status = nil
+    state_parent = nil
     Dir.chdir(bench_path) do
         # give the eval user access to the folder and its contents
         FileUtils.chmod_R(0777, ".")
@@ -570,19 +581,47 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
             command = "#{command_prefix} \"#{CODEX_BINARY}\" --model #{actual_model_id} -c model_reasoning_effort=\"#{reasoning_effort}\" #{PARAMS_CODEX} exec \"#{instruction}\" > output.txt 2>&1"
         elsif HARNESS == :claude
             command = claude_command(command_prefix, actual_model_id, REASONING_MAPPING.fetch(model), instruction)
+        elsif HARNESS == :opencode
+            # Scratch is outside the generated-source folder and on local disk.
+            # It is created after the existing residue sweep, never shared with
+            # another observation, and never added to the output repository.
+            state_parent = Dir.mktmpdir("opencode-observation-", "/tmp")
+            FileUtils.chmod(0777, state_parent)
+            spec_path = File.join(state_parent, "spec.json")
+            spec = { "id" => id, "binary" => OPENCODE_BINARY, "auth_file" => OPENCODE_AUTH_FILE,
+                "state" => File.join(state_parent, "private"), "workspace" => bench_path,
+                "model" => actual_model_id, "effort" => REASONING_MAPPING.fetch(model),
+                "instruction" => instruction, "timeout_seconds" => MAX_TIME_SECONDS }
+            File.write(spec_path, JSON.pretty_generate(spec) + "\n")
+            preparation_started = Time.now
+            preparation = Shellwords.join(["ruby", OPENCODE_SUPPORT_SCRIPT, "prepare", spec_path])
+            raise "OpenCode preparation failed" unless system("su", "-", EVAL_USER, "--shell=/bin/bash", "-c", preparation)
+            # Configuration inspection/installation is an infrastructure preflight,
+            # not model task time. Server and CLI startup remain in the task clock.
+            start_time += Time.now - preparation_started
+            command = Shellwords.join(["ruby", OPENCODE_SUPPORT_SCRIPT, "run", spec_path]) +
+                " > #{Shellwords.escape(File.join(bench_path, 'output.txt'))} 2>&1"
         else
             command = "#{command_prefix} copilot #{PARAMS} --model #{actual_model_id} -p \"#{instruction}\" > output.txt 2>&1"
         end
-        output = system("su - #{EVAL_USER} --shell=/bin/bash -c '#{command}'")
+        output = system("su", "-", EVAL_USER, "--shell=/bin/bash", "-c", command)
         agent_status = $?
         # write instructions to file for later analysis
         File.write(File.join(bench_path, "instruction.txt"), instruction)
     end
 
     end_time = Time.now
+    opencode_process = nil
+    if HARNESS == :opencode && File.file?(File.join(bench_path, "opencode-process.txt"))
+        opencode_process = JSON.parse(File.read(File.join(bench_path, "opencode-process.txt")))
+        # Native session export/metadata collection happens after the task clock.
+        end_time = Time.iso8601(opencode_process.fetch("generation_finished_at"))
+        raise "OpenCode evidence collection failed" unless agent_status&.exitstatus == opencode_process["exit_status"]
+    end
     duration = end_time - start_time
     File.write(File.join(bench_path, "process-status.txt"), JSON.pretty_generate({
-        "exit_status" => agent_status&.exitstatus, "term_signal" => agent_status&.termsig,
+        "exit_status" => opencode_process ? opencode_process["exit_status"] : agent_status&.exitstatus,
+        "term_signal" => opencode_process ? opencode_process["term_signal"] : agent_status&.termsig,
         "success" => agent_status&.success?, "timeout_seconds" => MAX_TIME_SECONDS
     }) + "\n")
 
@@ -640,6 +679,9 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
     # move everything to the target directory, so that subsequent agent runs cannot access the results
     FileUtils.mkdir_p(EVAL_TARGET_DIR)
     FileUtils.mv(bench_path, EVAL_TARGET_DIR)
+    if HARNESS == :opencode && state_parent && !File.exist?(File.join(state_parent, "private"))
+        FileUtils.remove_entry(state_parent)
+    end
 
     puts " - Done in #{duration.round(2)} seconds."
 
@@ -671,6 +713,15 @@ if HARNESS == :pi
     end
 elsif HARNESS == :codex
     puts "Using codex harness for evaluation"
+elsif HARNESS == :opencode
+    puts "Using pinned OpenCode #{OpenCodeHarness::VERSION} with subscription-only access"
+    MODELS_TO_EVAL.each do |model|
+        raise "OpenCode profile must include -oc-" unless model.include?("-oc-")
+        OpenCodeHarness.config(model: MODEL_MAPPING.fetch(model), effort: REASONING_MAPPING.fetch(model))
+        puts "  --model #{MODEL_MAPPING.fetch(model)} --variant #{REASONING_MAPPING.fetch(model)} --agent build --auto"
+    end
+    puts "Per-run wall clock limit: #{MAX_TIME_SECONDS / 60} minutes"
+    puts "Results are moved to #{EVAL_TARGET_DIR}"
 elsif HARNESS == :claude
     puts "Using claude harness for evaluation"
     MODELS_TO_EVAL.each do |model|

@@ -107,7 +107,7 @@ class OpenCodeObservationRunner
   def start_events
     ready = Queue.new
     @event_error = nil
-    @events = File.open(File.join(@workspace, "opencode-events.txt"), "w")
+    @events = File.open(File.join(@state, "opencode-events.txt"), "w")
     @events.sync = true
     @event_thread = Thread.new do
       http.start do |client|
@@ -163,7 +163,7 @@ class OpenCodeObservationRunner
     raise "Unexpected MCP servers" unless get("/mcp").empty?
     raise "Session isolation failed" unless get("/session").empty?
     evidence.merge!("resolved_config" => actual, "resolved_model" => model, "build_agent" => agent)
-    write(File.join(@workspace, "opencode-config.txt"), evidence)
+    write(File.join(@state, "opencode-config.txt"), evidence)
     start_events
     argv = [@binary, "run", "--attach", "http://127.0.0.1:#{@port}", "--dir", @workspace,
       "--format", "json", "--thinking", "--auto", "--agent", "build", "--model", @spec.fetch("model"),
@@ -218,6 +218,13 @@ class OpenCodeObservationRunner
       end
     end
     @server_log&.close
+    # Publish audit bookkeeping only after the agent/server have stopped, just
+    # like instruction/timing records in the native harnesses. During generation
+    # the workspace contains only the sequential input and ordinary output log.
+    %w[opencode-config.txt opencode-events.txt].each do |name|
+      source = File.join(@state, name)
+      FileUtils.cp(source, File.join(@workspace, name)) if File.file?(source)
+    end
     # Refreshes remain private, outside every generated-source/evidence folder.
     auth_path = File.join(@state, "data/opencode/auth.json")
     if File.file?(auth_path)

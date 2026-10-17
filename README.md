@@ -155,9 +155,10 @@ not renamed or regenerated.
 The stock `serve` and `run --attach` commands use a fresh authenticated loopback
 server for each observation. A read-only subscriber retains native retry-status
 events omitted by the CLI's JSON output. Explicit session titles prevent helper
-title-model calls; compaction uses the selected model and effort. Transcript
-`step-finish` counters are cross-checked against native session metadata and
-summed once per request, including compaction. Input includes cached tokens and
+title-model calls; compaction uses the selected model and effort. Native event
+and session `step-finish` counters must agree and are summed once per request,
+including compaction. The CLI transcript is cross-checked too; its final accounting
+event can be absent, but both native records must retain it. Input includes cached tokens and
 output includes reasoning tokens. Recorded scheduled retry waits are subtracted
 from elapsed time; API-only time is left unavailable, not inferred from turns
 that also contain local tool work. Setup inspection and final metadata export

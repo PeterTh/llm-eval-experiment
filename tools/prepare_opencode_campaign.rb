@@ -71,6 +71,9 @@ runtime = Dir.mktmpdir("sol61-opencode-generation-", "/tmp")
 FileUtils.chmod(0755, runtime)
 FileUtils.mkdir_p(campaign, mode: 0700)
 FileUtils.mkdir_p(results)
+# Interrupted private runtime state can include OAuth material; the generic
+# residue archive must not make it readable by later evaluation invocations.
+FileUtils.mkdir_p(File.join(Dir.home, "llm_para_agent_residue", batch), mode: 0700)
 archive(repo, File.join(campaign, "method"))
 FileUtils.cp_r(File.join(campaign, "method"), File.join(runtime, "experiment"))
 archive(bench_repo, File.join(runtime, "benchmarks"))

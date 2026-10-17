@@ -104,8 +104,29 @@ module OpenCodeGenerationObservation
       raise Invalid, "Conflicting transcript accounting part" if previous && previous != part
       transcript_steps[part.fetch("id")] = part
     end
-    raise Invalid, "Native transcript/session accounting differs" unless transcript_steps == steps
     events = File.readlines(paths.fetch("opencode-events.txt")).map { |line| JSON.parse(line) }
+    event_steps = {}
+    events.each do |row|
+      event = row.fetch("event")
+      next unless event["type"] == "message.part.updated" && event.dig("properties", "part", "type") == "step-finish"
+      part = event.fetch("properties").fetch("part")
+      previous = event_steps[part.fetch("id")]
+      raise Invalid, "Conflicting native event accounting part" if previous && previous != part
+      event_steps[part.fetch("id")] = part
+    end
+    raise Invalid, "Native events/session accounting differs" unless event_steps == steps
+    raise Invalid, "Native transcript/session accounting differs" unless transcript_steps.all? { |key, part| steps[key] == part }
+    # Stock `run --attach` can exit before printing its terminal step-finish
+    # event. Its independently retained native event and session record must
+    # agree; no counter is estimated and the original CLI transcript is untouched.
+    omitted = steps.keys - transcript_steps.keys
+    final_message = messages.last.fetch("info").fetch("id")
+    unless omitted.empty? || (omitted.size == 1 && steps[omitted.first]["messageID"] == final_message && steps[omitted.first]["reason"] == "stop")
+      raise Invalid, "Nonterminal accounting missing from CLI transcript"
+    end
+    if info["tokens"]
+      raise Invalid, "Native session total disagrees with request counters" unless normalize_usage(info["tokens"]) == totals
+    end
     backoff, retries = retry_backoff(events, sid, native_process)
     raise Invalid, "Retry waits exceed duration" if backoff > duration
     report = { "id" => id, "model" => model, "reasoning_effort" => effort, "version" => version,
@@ -115,6 +136,7 @@ module OpenCodeGenerationObservation
       "retry_backoff_seconds" => backoff, "usage_available" => !counts.empty?,
       "token_counts" => totals, "total_tokens" => totals.fetch("total_tokens"),
       "usage_source" => "opencode_native_step_finish",
+      "cli_omitted_terminal_accounting_parts" => omitted.size,
       "sha256" => paths.transform_values { |path| Digest::SHA256.file(path).hexdigest } }
     if baseline
       %w[model reasoning_effort version tools resolved_model].each do |key|

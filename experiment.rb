@@ -586,7 +586,7 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
             # It is created after the existing residue sweep, never shared with
             # another observation, and never added to the output repository.
             state_parent = Dir.mktmpdir("opencode-observation-", "/tmp")
-            FileUtils.chmod(0777, state_parent)
+            FileUtils.chmod(01777, state_parent)
             spec_path = File.join(state_parent, "spec.json")
             spec = { "id" => id, "binary" => OPENCODE_BINARY, "auth_file" => OPENCODE_AUTH_FILE,
                 "state" => File.join(state_parent, "private"), "workspace" => bench_path,
@@ -612,11 +612,12 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
 
     end_time = Time.now
     opencode_process = nil
+    opencode_collection_ok = true
     if HARNESS == :opencode && File.file?(File.join(bench_path, "opencode-process.txt"))
         opencode_process = JSON.parse(File.read(File.join(bench_path, "opencode-process.txt")))
         # Native session export/metadata collection happens after the task clock.
         end_time = Time.iso8601(opencode_process.fetch("generation_finished_at"))
-        raise "OpenCode evidence collection failed" unless agent_status&.exitstatus == opencode_process["exit_status"]
+        opencode_collection_ok = agent_status&.exitstatus == opencode_process["exit_status"]
     end
     duration = end_time - start_time
     File.write(File.join(bench_path, "process-status.txt"), JSON.pretty_generate({
@@ -687,6 +688,11 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
 
     # kill stray processes that might still be running (spawned by the LLM)
     system("su - #{EVAL_USER} --shell=/bin/bash -c 'pkill -u #{EVAL_USER} -KILL'")
+
+    # Preserve the native output and exact parent timing before reporting a
+    # post-generation collection/cleanup failure. A repair must not force a new
+    # model invocation when the completed observation's evidence is recoverable.
+    raise "OpenCode evidence collection failed; native result retained" unless opencode_collection_ok
 
     $times << duration
     avg_time = $times.sum / $times.size

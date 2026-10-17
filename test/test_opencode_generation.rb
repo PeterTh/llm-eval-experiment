@@ -57,6 +57,22 @@ class OpenCodeGenerationTest < Minitest::Test
     assert_raises(OpenCodeGenerationObservation::Invalid) { read }
   end
 
+  def test_cli_terminal_accounting_omission_is_filled_by_matching_native_evidence
+    File.write(File.join(@directory, "output.txt"), JSON.generate({ "type" => "text", "sessionID" => @sid }) + "\n")
+    report = read
+    assert_equal 110, report.fetch("total_tokens")
+    assert_equal 1, report.fetch("cli_omitted_terminal_accounting_parts")
+    @session["messages"].last["parts"].first["reason"] = "tool-calls"
+    write_opencode_fixture(@directory)
+    File.write(File.join(@directory, "output.txt"), "{}\n")
+    assert_raises(OpenCodeGenerationObservation::Invalid) { read }
+  end
+
+  def test_missing_independent_native_accounting_is_rejected
+    File.write(File.join(@directory, "opencode-events.txt"), @events.map { |row| JSON.generate(row) + "\n" }.join)
+    assert_raises(OpenCodeGenerationObservation::Invalid) { read }
+  end
+
   def test_inconsistent_total_and_negative_counts_are_rejected
     tokens = @session["messages"].last["parts"].first["tokens"]
     tokens["total"] = 109

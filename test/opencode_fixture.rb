@@ -42,8 +42,9 @@ module OpenCodeFixture
       "process-status.txt" => @process, "opencode-process.txt" => @process }.each do |name, value|
       File.write(File.join(directory, name), JSON.generate(value) + "\n")
     end
-    File.write(File.join(directory, "opencode-events.txt"), @events.map { |row| JSON.generate(row) + "\n" }.join)
     parts = @session.fetch("messages").flat_map { |m| m.fetch("parts") }.select { |part| part["type"] == "step-finish" }
+    accounting = parts.map { |part| { "received_at_ms" => 19999, "event" => { "type" => "message.part.updated", "properties" => { "part" => part } } } }
+    File.write(File.join(directory, "opencode-events.txt"), (@events + accounting).map { |row| JSON.generate(row) + "\n" }.join)
     File.write(File.join(directory, "output.txt"), parts.map { |part| JSON.generate({ "type" => "step_finish", "sessionID" => @sid, "part" => part }) + "\n" }.join)
   end
 end

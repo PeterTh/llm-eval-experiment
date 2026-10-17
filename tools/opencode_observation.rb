@@ -122,7 +122,8 @@ class OpenCodeObservationRunner
               data = frame.lines.filter_map { |line| line.delete_prefix("data:").strip if line.start_with?("data:") }.join("\n")
               next if data.empty?
               event = JSON.parse(data)
-              next unless %w[session.created session.status session.error].include?(event["type"])
+              accounting = event["type"] == "message.part.updated" && event.dig("properties", "part", "type") == "step-finish"
+              next unless accounting || %w[session.created session.status session.error].include?(event["type"])
               @events.puts(JSON.generate({ "received_at_ms" => (Time.now.to_f * 1000).round, "event" => event }))
             end
           end

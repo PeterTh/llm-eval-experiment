@@ -4,6 +4,7 @@ require "tmpdir"
 require_relative "opencode_fixture"
 require_relative "../lib/local_evaluation"
 require_relative "../tools/generation_campaign"
+require_relative "../tools/opencode_observation"
 
 class OpenCodeGenerationTest < Minitest::Test
   include OpenCodeFixture
@@ -86,12 +87,74 @@ class OpenCodeGenerationTest < Minitest::Test
 
   def test_policy_and_login_fail_closed
     assert_raises(OpenCodeHarness::Invalid) { OpenCodeHarness.config(model: "anthropic/claude-sonnet-5-5", effort: "medium") }
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeHarness.config(model: "openai/gpt-other", effort: "medium") }
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeHarness.config(model: "openai/gpt-6-luna", effort: "high") }
     auth = File.join(@tmp, "auth.json")
     File.write(auth, JSON.generate({ "openai" => { "type" => "api", "key" => "not-a-real-key" } }))
     assert_raises(OpenCodeHarness::Invalid) { OpenCodeHarness.credential(auth) }
     @evidence["build_agent"]["tools"]["task"] = true
     write_opencode_fixture(@directory)
     assert_raises(OpenCodeGenerationObservation::Invalid) { read }
+  end
+
+  def test_luna_profile_preserves_the_sol_policy_and_names_its_native_baseline
+    profile = OpenCodeHarness.campaign_profile("gpt-6-luna-oc-medium")
+    assert_equal "openai/gpt-6-luna", profile.fetch("model")
+    assert_equal "medium", profile.fetch("reasoning_effort")
+    assert_equal "20260929-135931", profile.fetch("native_batch")
+    assert_equal "gpt-6-luna-medium", profile.fetch("native_profile")
+    sol = OpenCodeHarness.config(model: "openai/gpt-6.1-sol", effort: "medium")
+    luna = OpenCodeHarness.config(model: profile.fetch("model"), effort: profile.fetch("reasoning_effort"))
+    assert_equal JSON.generate(sol).gsub("gpt-6.1-sol", "gpt-6-luna"), JSON.generate(luna)
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeHarness.campaign_profile("gpt-6-luna-medium") }
+  end
+
+  def test_luna_native_usage_and_aggregation_keep_the_requested_identity
+    id = "black-scholes_gpt-6-luna-oc-medium_omp_r1"
+    directory = File.join(@tmp, id)
+    opencode_fixture(directory, model: "openai/gpt-6-luna")
+    report = OpenCodeGenerationObservation.read(directory, model: "openai/gpt-6-luna", effort: "medium")
+    assert_equal id, report.fetch("id")
+    assert_equal "completed", report.fetch("outcome")
+    assert_equal 110, report.fetch("total_tokens")
+    assert_raises(OpenCodeGenerationObservation::Invalid) do
+      OpenCodeGenerationObservation.read(directory, model: "openai/gpt-6.1-sol", effort: "medium")
+    end
+    pipeline = LocalEvaluation::AggregatePipeline.allocate
+    pipeline.instance_variable_set(:@warnings, {})
+    pipeline.define_singleton_method(:apply_diff_counts) { |*| nil }
+    result = AggregateEvaluation.new("black-scholes", "gpt-6-luna-oc-medium", "omp", 1)
+    pipeline.send(:parse_agent_metadata, id, { "source_path" => directory }, result)
+    assert_equal 110, result.total_tokens
+    assert_equal 18, result.total_time
+    assert_equal "opencode_native_step_finish", result.token_usage_source
+  end
+
+  def test_server_inspection_uses_each_requested_model_and_rejects_fallbacks
+    OpenCodeHarness::CAMPAIGN_PROFILES.each_value do |profile|
+      model = profile.fetch("model")
+      provider, model_id = model.split("/", 2)
+      opencode_fixture(@directory, model: model)
+      runner = OpenCodeObservationRunner.allocate
+      runner.instance_variable_set(:@spec, { "model" => model, "effort" => "medium" })
+      runner.instance_variable_set(:@expected, @evidence.fetch("requested_config"))
+      responses = {
+        "/config" => @evidence.fetch("resolved_config"), "/agent" => [@evidence.fetch("build_agent")],
+        "/experimental/tool?provider=#{provider}&model=#{model_id}" => @evidence.fetch("enabled_tools").map { |tool| { "id" => tool } },
+        "/config/providers" => { "providers" => [{ "id" => provider, "models" => { model_id => @evidence.fetch("resolved_model") } }] },
+        "/mcp" => {}, "/session" => []
+      }
+      runner.define_singleton_method(:get) { |path| responses.fetch(path) }
+      assert_equal @evidence, runner.verify_server!(@evidence)
+      models = responses.fetch("/config/providers").fetch("providers").first.fetch("models")
+      models["gpt-other"] = models.fetch(model_id)
+      error = assert_raises(RuntimeError) { runner.verify_server!(@evidence) }
+      assert_equal "Additional or missing models", error.message
+      models.delete("gpt-other")
+      models.fetch(model_id)["options"]["reasoningEffort"] = "high"
+      error = assert_raises(RuntimeError) { runner.verify_server!(@evidence) }
+      assert_equal "Requested reasoning default differs", error.message
+    end
   end
 
   def test_environment_does_not_inherit_provider_or_harness_overrides
@@ -163,7 +226,8 @@ class OpenCodeGenerationTest < Minitest::Test
     def launch(command)
       id = File.read(command.last.delete_prefix("--run-ids=")).strip
       @launched << id
-      opencode_fixture(File.join(@results, id))
+      model = @manifest.fetch("models").fetch(id.split("_")[1]).fetch("model")
+      opencode_fixture(File.join(@results, id), model: model)
       true
     end
     def commit_outputs
@@ -172,14 +236,23 @@ class OpenCodeGenerationTest < Minitest::Test
   end
 
   def test_controller_reuses_every_pilot_and_never_repeats_accepted_observations
+    assert_controller_pilot_reuse("gpt-6.1-sol-oc-medium")
+  end
+
+  def test_luna_controller_reuses_every_pilot_and_never_repeats_accepted_observations
+    assert_controller_pilot_reuse("gpt-6-luna-oc-medium")
+  end
+
+  def assert_controller_pilot_reuse(profile_name)
+    profile = OpenCodeHarness.campaign_profile(profile_name)
     ids = %w[black-scholes nbody floydwarshall qtclustering matmul].zip(%w[omp cuda mpi hybrid omp]).map do |benchmark, backend|
-      "#{benchmark}_gpt-6.1-sol-oc-medium_#{backend}_r1"
+      "#{benchmark}_#{profile_name}_#{backend}_r1"
     end
     results = File.join(@tmp, "20261017-190000")
     FileUtils.mkdir_p(results)
     manifest = { "harness" => "opencode", "campaign_id" => "20261017-190000", "expected_runs" => ids.size,
       "persistent_results" => results, "runtime_root" => File.join(@tmp, "runtime"), "preflight_ids" => ids.take(4),
-      "models" => { "gpt-6.1-sol-oc-medium" => { "model" => "openai/gpt-6.1-sol", "reasoning_effort" => "medium" } },
+      "models" => { profile_name => profile.slice("model", "reasoning_effort") },
       "opencode_version" => OpenCodeHarness::VERSION, "per_run_timeout_seconds" => 14400 }
     File.write(File.join(@tmp, "campaign.json"), JSON.generate(manifest))
     File.write(File.join(@tmp, "run-ids.txt"), ids.join("\n") + "\n")

@@ -7,6 +7,18 @@ require "digest"
 module OpenCodeHarness
   VERSION = "1.19.3"
   BINARY_SHA256 = "179ca421d61eefeadfa0c50e084a6e79c1623734732f0f4593f81ccfd3ab7ee9"
+  CAMPAIGN_PROFILES = {
+    "gpt-6.1-sol-oc-medium" => {
+      "model" => "openai/gpt-6.1-sol", "reasoning_effort" => "medium",
+      "label" => "Sol 6.1 OpenCode medium", "slug" => "sol61-opencode-medium", "unit_slug" => "sol61-oc",
+      "native_batch" => "20261006-204623", "native_profile" => "gpt-6.1-sol-medium"
+    }.freeze,
+    "gpt-6-luna-oc-medium" => {
+      "model" => "openai/gpt-6-luna", "reasoning_effort" => "medium",
+      "label" => "Luna 6 OpenCode medium", "slug" => "luna6-opencode-medium", "unit_slug" => "luna6-oc",
+      "native_batch" => "20260929-135931", "native_profile" => "gpt-6-luna-medium"
+    }.freeze
+  }.freeze
   FORBIDDEN_TOOLS = %w[webfetch websearch task question plan_enter plan_exit].freeze
   LOCAL_TOOLS = %w[invalid bash read glob grep edit write todowrite skill apply_patch].freeze
   EVIDENCE_FILES = %w[opencode-config.txt opencode-session.txt opencode-events.txt opencode-process.txt].freeze
@@ -20,10 +32,15 @@ module OpenCodeHarness
   class Invalid < StandardError; end
   module_function
 
+  def campaign_profile(name)
+    CAMPAIGN_PROFILES.fetch(name) { raise Invalid, "Unapproved OpenCode campaign profile: #{name}" }
+  end
+
   def config(model:, effort:)
-    # Anthropic is deliberately not enabled until there is a confirmed supported
-    # subscription-only OpenCode route. No API-key or credit-spending fallback.
-    raise Invalid, "Unapproved OpenCode model/access route" unless model == "openai/gpt-6.1-sol" && effort == "medium"
+    # Anthropic authentication/billing remains deferred by the operator. No
+    # API-key or credit-spending fallback is enabled for these campaigns.
+    approved = CAMPAIGN_PROFILES.values.any? { |profile| profile["model"] == model && profile["reasoning_effort"] == effort }
+    raise Invalid, "Unapproved OpenCode model/access route" unless approved
     provider, model_id = model.split("/", 2)
     { "$schema" => "https://opencode.ai/config.json", "model" => model, "small_model" => model,
       "default_agent" => "build", "autoupdate" => false, "share" => "disabled",

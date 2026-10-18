@@ -137,10 +137,11 @@ isolate each observation. Updates and model-catalog refreshes are disabled.
 
 The pinned executable and supported subscription login are installed separately
 under the evaluation account, without replacing its existing OpenCode setup.
-Only `openai/gpt-6.1-sol`, medium, is enabled. Anthropic access stays deferred until
-a supported subscription-only OpenCode route is confirmed; API keys, paid-credit
-fallbacks, impersonation plugins and substituting Claude Code's agent loop are
-not permitted. OpenAI documents [OpenCode subscription sign-in](https://learn.chatgpt.com/docs/sign-in-with-chatgpt).
+The approved models are `openai/gpt-6.1-sol` and `openai/gpt-6-luna`, both at medium.
+Anthropic authentication/billing setup remains deferred by the operator; these
+campaigns enable no API keys, paid-credit fallbacks, impersonation plugins or
+substitution of Claude Code's agent loop. OpenAI documents
+[OpenCode subscription sign-in](https://learn.chatgpt.com/docs/sign-in-with-chatgpt).
 
 `tools/prepare_opencode_campaign.rb` freezes committed method sources, the existing
 sequential baseline, the executable and the full ordered selection into a local
@@ -149,8 +150,10 @@ fully suspended. The predeclared production pilot covers black-scholes/OMP,
 nbody/CUDA, floydwarshall/MPI and qtclustering/hybrid, repetition 1. Accept it using
 the normal campaign controller, review the infrastructure evidence, then start
 `run` with the same campaign: all four observations are reused, independent of
-program correctness. The profile is `gpt-6.1-sol-oc-medium`; native profiles are
-not renamed or regenerated.
+program correctness. Select `--profile=gpt-6-luna-oc-medium` for Luna 6, or
+`--profile=gpt-6.1-sol-oc-medium` (the default) for Sol 6.1. Native profiles are
+not renamed or regenerated; the selected native comparison is recorded in the
+campaign manifest.
 
 The stock `serve` and `run --attach` commands use a fresh authenticated loopback
 server for each observation. A read-only subscriber retains native retry-status

@@ -7,6 +7,7 @@ require "open3"
 require "tmpdir"
 require "time"
 require "socket"
+require "optparse"
 require_relative "../lib/experiment_selection"
 require_relative "../lib/opencode_harness"
 
@@ -31,6 +32,13 @@ def hashes(directory)
   end
 end
 
+profile_name = "gpt-6.1-sol-oc-medium"
+OptionParser.new do |options|
+  options.banner = "Usage: prepare_opencode_campaign.rb [--profile=PROFILE]"
+  options.on("--profile=PROFILE", "Approved OpenCode campaign profile") { |value| profile_name = value }
+end.parse!
+raise "Unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
+profile = OpenCodeHarness.campaign_profile(profile_name)
 repo = File.expand_path("..", __dir__)
 bench_repo = File.expand_path("../benchmarks", repo)
 source_repo = File.join(Dir.home, "llm_para_experiments")
@@ -57,17 +65,17 @@ fable_manifest = JSON.parse(File.read(File.join(fable, "campaign.json")))
 end
 benchmarks = %w[black-scholes cahn-hilliard cholesky floydwarshall matmul nbody qtclustering roomsim spmv stencil3d unstructured]
 backends = %w[omp cuda mpi hybrid]
-profiles = { "gpt-6.1-sol-oc-medium" => { "model" => "openai/gpt-6.1-sol", "reasoning_effort" => "medium" } }
+profiles = { profile_name => profile.slice("model", "reasoning_effort") }
 ids = ExperimentSelection.configurations(benchmarks: benchmarks, models: profiles.keys, backends: backends, repetitions: 5).map { |configuration| ExperimentSelection.id(configuration) }
 preflights = %w[black-scholes_omp nbody_cuda floydwarshall_mpi qtclustering_hybrid].map do |pair|
   benchmark, backend = pair.split("_")
   "#{benchmark}_#{profiles.keys.first}_#{backend}_r1"
 end
 batch = Time.now.utc.strftime("%Y%m%d-%H%M%S")
-campaign = File.join(Dir.home, "llm_para_campaigns/#{batch}-sol61-opencode-medium")
+campaign = File.join(Dir.home, "llm_para_campaigns/#{batch}-#{profile.fetch('slug')}")
 results = File.join(source_repo, batch)
 raise "Campaign already exists" if File.exist?(campaign) || File.exist?(results) || File.exist?("/home/llmtest/evals/#{batch}")
-runtime = Dir.mktmpdir("sol61-opencode-generation-", "/tmp")
+runtime = Dir.mktmpdir("#{profile.fetch('slug')}-generation-", "/tmp")
 FileUtils.chmod(0755, runtime)
 FileUtils.mkdir_p(campaign, mode: 0700)
 FileUtils.mkdir_p(results)
@@ -88,7 +96,7 @@ end
 File.write(File.join(campaign, "run-ids.txt"), ids.join("\n") + "\n")
 File.write(File.join(campaign, "preflight-ids.txt"), preflights.join("\n") + "\n")
 manifest = { "schema_version" => 1, "campaign_id" => batch, "prepared_at" => Time.now.utc.iso8601,
-  "phase" => "production_preflight", "host" => Socket.gethostname, "label" => "Sol 6.1 OpenCode medium",
+  "phase" => "production_preflight", "host" => Socket.gethostname, "label" => profile.fetch("label"),
   "source_repository" => "https://github.com/PeterTh/llm-eval-experiment", "source_commit" => checked("git", "-C", repo, "rev-parse", "HEAD").strip,
   "source_note" => "Committed method snapshot only; unrelated worktree edits are not selected or copied.",
   "files" => hashes(File.join(runtime, "experiment")), "benchmark_files" => hashes(File.join(runtime, "benchmarks")),
@@ -104,15 +112,16 @@ manifest = { "schema_version" => 1, "campaign_id" => batch, "prepared_at" => Tim
   "workspace" => "/home/llmtest/evals/#{batch}", "persistent_results" => results, "runtime_root" => runtime,
   "working_directory" => File.join(runtime, "experiment"), "source_branch" => checked("git", "-C", source_repo, "branch", "--show-current").strip,
   "initial_generated_source_commit" => checked("git", "-C", source_repo, "rev-parse", "HEAD").strip,
-  "preflight_unit" => "llm-sol61-oc-preflight-#{batch}.service", "generation_unit" => "llm-sol61-oc-generation-#{batch}.service",
-  "monitor_unit" => "llm-sol61-oc-monitor-#{batch}.service", "monitor_timer" => "llm-sol61-oc-monitor-#{batch}.timer",
+  "preflight_unit" => "llm-#{profile.fetch('unit_slug')}-preflight-#{batch}.service", "generation_unit" => "llm-#{profile.fetch('unit_slug')}-generation-#{batch}.service",
+  "monitor_unit" => "llm-#{profile.fetch('unit_slug')}-monitor-#{batch}.service", "monitor_timer" => "llm-#{profile.fetch('unit_slug')}-monitor-#{batch}.timer",
   "paused_campaign" => { "path" => fable, "pause_receipt_sha256" => Digest::SHA256.file(pause_path).hexdigest,
     "resume_not_before" => pause.fetch("next_weekly_reset"), "verified_preserved_observations" => preserved.size,
     "constraint" => "Fable remains fully suspended; campaigns never run concurrently under llmtest." },
-  "comparison" => { "native_sol_batch" => "20261006-204623", "native_sol_profile" => "gpt-6.1-sol-medium",
+  "comparison" => { "native_batch" => profile.fetch("native_batch"), "native_profile" => profile.fetch("native_profile"),
+    "native_sol_batch" => "20261006-204623", "native_sol_profile" => "gpt-6.1-sol-medium",
     "native_sonnet_batch" => "20261014-212207", "native_sonnet_profile" => "claude-sonnet-5.5-cc-medium",
     "deferred_profile" => "claude-sonnet-5.5-oc-medium",
-    "deferral_reason" => "No confirmed supported subscription-only Anthropic route in pinned OpenCode; no API billing, identity spoofing or Claude Code loop substitution.",
+    "deferral_reason" => "Anthropic authentication/billing setup deferred by the operator; no API billing, credit fallback, identity spoofing or Claude Code loop substitution enabled.",
     "interpretation" => "Historical native baselines with the same sequential input and budget; model aliases are not immutable snapshots. Stock OpenCode model-specific prompts/adapters are retained; not a pure model-only causal comparison." },
   "retention" => "Local NVMe runtime and workspaces; persistent source, transcripts and compact metadata under home. No binaries, dependency trees, raw session databases or credentials in Git.",
   "reuse" => "All four predeclared production preflights count toward 220 observations regardless of generated-program correctness.",
@@ -123,7 +132,7 @@ File.write(File.join(campaign, "campaign.json"), JSON.pretty_generate(manifest) 
 dry = checked("ruby", File.join(runtime, "run.rb"), "--production", "--continue=#{batch}")
 File.write(File.join(campaign, "production-dry-run.txt"), dry)
 raise "Dry-run scope differs" unless dry.include?("Total number of experiments to run: 220") && ids.all? { |id| dry.include?(id) }
-raise "Model, effort or budget differs" unless dry.include?("--model openai/gpt-6.1-sol --variant medium") && dry.include?("Per-run wall clock limit: 240 minutes")
+raise "Model, effort or budget differs" unless dry.include?("--model #{profile.fetch('model')} --variant #{profile.fetch('reasoning_effort')}") && dry.include?("Per-run wall clock limit: 240 minutes")
 pilot = checked("ruby", File.join(runtime, "run.rb"), "--production", "--continue=#{batch}", "--run-ids=#{campaign}/preflight-ids.txt")
 File.write(File.join(campaign, "preflight-dry-run.txt"), pilot)
 raise "Pilot scope differs" unless pilot.include?("Total number of experiments to run: 4")

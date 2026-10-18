@@ -137,16 +137,15 @@ class OpenCodeObservationRunner
     raise "Native event stream did not start" unless Timeout.timeout(10) { ready.pop }
   end
 
-  def run
-    evidence = JSON.parse(File.read(File.join(@state, "prepared.json")))
-    raise "Subscription authentication was not prepared" unless evidence.fetch("auth_type") == "openai-subscription-oauth"
-    OpenCodeHarness.credential(File.join(@state, "data/opencode/auth.json"))
-    start_server
+  def verify_server!(evidence)
+    provider, model_id = @spec.fetch("model").split("/", 2)
+    effort = @spec.fetch("effort")
     actual = get("/config")
     OpenCodeHarness.verify_config!(actual, @expected)
     agent = get("/agent").find { |entry| entry["name"] == "build" }
     raise "Missing native build agent" unless agent
-    registry = get("/experimental/tool?provider=openai&model=gpt-6.1-sol").map { |entry| entry.fetch("id") }
+    query = URI.encode_www_form("provider" => provider, "model" => model_id)
+    registry = get("/experimental/tool?#{query}").map { |entry| entry.fetch("id") }
     agent["tools"] = registry.to_h do |tool|
       permission = %w[edit write apply_patch].include?(tool) ? "edit" : tool
       rule = agent.fetch("permission").reverse.find { |item| [permission, "*"].include?(item["permission"]) }
@@ -155,15 +154,23 @@ class OpenCodeObservationRunner
     enabled = OpenCodeHarness.verify_agent!(agent)
     raise "Server tools differ from isolated preflight" unless enabled == evidence.fetch("enabled_tools")
     providers = get("/config/providers").fetch("providers")
-    raise "Unexpected enabled provider" unless providers.map { |provider| provider.fetch("id") } == ["openai"]
+    raise "Unexpected enabled provider" unless providers.map { |entry| entry.fetch("id") } == [provider]
     models = providers.first.fetch("models")
-    raise "Additional or missing models" unless models.keys == ["gpt-6.1-sol"]
-    model = models.fetch("gpt-6.1-sol")
-    raise "Medium reasoning is unavailable" unless model.dig("variants", "medium", "reasoningEffort") == "medium"
-    raise "Medium reasoning default differs" unless model.dig("options", "reasoningEffort") == "medium"
+    raise "Additional or missing models" unless models.keys == [model_id]
+    model = models.fetch(model_id)
+    raise "Requested reasoning is unavailable" unless model.dig("variants", effort, "reasoningEffort") == effort
+    raise "Requested reasoning default differs" unless model.dig("options", "reasoningEffort") == effort
     raise "Unexpected MCP servers" unless get("/mcp").empty?
     raise "Session isolation failed" unless get("/session").empty?
     evidence.merge!("resolved_config" => actual, "resolved_model" => model, "build_agent" => agent)
+  end
+
+  def run
+    evidence = JSON.parse(File.read(File.join(@state, "prepared.json")))
+    raise "Subscription authentication was not prepared" unless evidence.fetch("auth_type") == "openai-subscription-oauth"
+    OpenCodeHarness.credential(File.join(@state, "data/opencode/auth.json"))
+    start_server
+    verify_server!(evidence)
     write(File.join(@state, "opencode-config.txt"), evidence)
     start_events
     argv = [@binary, "run", "--attach", "http://127.0.0.1:#{@port}", "--dir", @workspace,

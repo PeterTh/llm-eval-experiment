@@ -3,9 +3,10 @@ require_relative "../lib/opencode_generation_observation"
 require "fileutils"
 
 module OpenCodeFixture
-  def opencode_fixture(directory, timeout: false)
+  def opencode_fixture(directory, timeout: false, model: "openai/gpt-6.1-sol")
     FileUtils.mkdir_p(directory)
-    model, effort = "openai/gpt-6.1-sol", "medium"
+    effort = "medium"
+    provider, model_id = model.split("/", 2)
     config = OpenCodeHarness.config(model: model, effort: effort)
     tools = %w[apply_patch bash glob grep invalid read skill todowrite]
     agent = { "name" => "build", "native" => true, "tools" => tools.to_h { |tool| [tool, true] },
@@ -19,9 +20,9 @@ module OpenCodeFixture
     @session = { "info" => { "id" => @sid, "version" => OpenCodeHarness::VERSION,
       "title" => File.basename(directory), "directory" => "/evals/#{File.basename(directory)}" }, "messages" => [
       { "info" => { "id" => "msg_user", "role" => "user", "sessionID" => @sid,
-        "model" => { "providerID" => "openai", "modelID" => "gpt-6.1-sol", "variant" => effort } }, "parts" => [] },
-      { "info" => { "id" => "msg_assistant", "role" => "assistant", "sessionID" => @sid, "providerID" => "openai",
-        "modelID" => "gpt-6.1-sol", "variant" => effort, "agent" => "build", "finish" => "stop", "time" => { "completed" => 20000 } },
+        "model" => { "providerID" => provider, "modelID" => model_id, "variant" => effort } }, "parts" => [] },
+      { "info" => { "id" => "msg_assistant", "role" => "assistant", "sessionID" => @sid, "providerID" => provider,
+        "modelID" => model_id, "variant" => effort, "agent" => "build", "finish" => "stop", "time" => { "completed" => 20000 } },
         "parts" => [{ "id" => "part_finish", "messageID" => "msg_assistant", "sessionID" => @sid, "type" => "step-finish", "reason" => "stop",
           "tokens" => { "input" => 20, "output" => 6, "reasoning" => 4, "cache" => { "read" => 80, "write" => 0 }, "total" => 110 } }] }
     ] }

@@ -17,6 +17,17 @@ module OpenCodeHarness
       "model" => "openai/gpt-6-luna", "reasoning_effort" => "medium",
       "label" => "Luna 6 OpenCode medium", "slug" => "luna6-opencode-medium", "unit_slug" => "luna6-oc",
       "native_batch" => "20260929-135931", "native_profile" => "gpt-6-luna-medium"
+    }.freeze,
+    "deepseek-v4.1-flash-oc-high" => {
+      "model" => "opencode-go/deepseek-v4.1-flash", "reasoning_effort" => "high",
+      "label" => "DeepSeek V4.1 Flash OpenCode high", "slug" => "deepseek41-flash-opencode-high", "unit_slug" => "deepseek41-oc",
+      "access" => "opencode-go", "free_only" => false
+    }.freeze,
+    "minimax-m3.1-flash-oc-medium" => {
+      "model" => "opencode-go/minimax-m3.1-flash-free", "reasoning_effort" => "medium",
+      "label" => "MiniMax M3.1 Flash OpenCode medium", "slug" => "minimax31-flash-opencode-medium", "unit_slug" => "minimax31-oc",
+      "access" => "opencode-go", "free_only" => true,
+      "definition" => "minimax-m3.1-flash-free.json"
     }.freeze
   }.freeze
   FORBIDDEN_TOOLS = %w[webfetch websearch task question plan_enter plan_exit].freeze
@@ -37,17 +48,17 @@ module OpenCodeHarness
   end
 
   def config(model:, effort:)
-    # Anthropic authentication/billing remains deferred by the operator. No
-    # API-key or credit-spending fallback is enabled for these campaigns.
-    approved = CAMPAIGN_PROFILES.values.any? { |profile| profile["model"] == model && profile["reasoning_effort"] == effort }
-    raise Invalid, "Unapproved OpenCode model/access route" unless approved
+    profile = CAMPAIGN_PROFILES.values.find { |entry| entry["model"] == model && entry["reasoning_effort"] == effort }
+    raise Invalid, "Unapproved OpenCode model/access route" unless profile
     provider, model_id = model.split("/", 2)
+    definition = profile["definition"] ? JSON.parse(File.read(File.join(__dir__, "opencode_models", profile.fetch("definition")))).fetch("config") : {}
+    definition["options"] = { "reasoningEffort" => effort }
     { "$schema" => "https://opencode.ai/config.json", "model" => model, "small_model" => model,
       "default_agent" => "build", "autoupdate" => false, "share" => "disabled",
       "enabled_providers" => [provider], "plugin" => [], "mcp" => {}, "instructions" => [],
       "permission" => { "*" => "allow" }.merge(FORBIDDEN_TOOLS.to_h { |tool| [tool, "deny"] }),
       "provider" => { provider => { "whitelist" => [model_id], "models" => {
-        model_id => { "options" => { "reasoningEffort" => effort } }
+        model_id => definition
       } } },
       "agent" => { "build" => { "variant" => effort },
         "compaction" => { "model" => model, "variant" => effort } } }
@@ -66,10 +77,21 @@ module OpenCodeHarness
     )
   end
 
-  def credential(path)
+  def auth_type(model)
+    raise Invalid, "Unapproved OpenCode access route" unless CAMPAIGN_PROFILES.values.any? { |profile| profile["model"] == model }
+    model.start_with?("opencode-go/") ? "opencode-go-subscription-api-key" : "openai-subscription-oauth"
+  end
+
+  def credential(path, model: "openai/gpt-6.1-sol")
     auth = JSON.parse(File.read(path))
-    raise Invalid, "Only OpenAI subscription OAuth is permitted" unless auth.keys == ["openai"] && auth.dig("openai", "type") == "oauth"
-    %w[access refresh].each { |key| raise Invalid, "Incomplete subscription credential" unless auth.dig("openai", key).is_a?(String) && !auth.dig("openai", key).empty? }
+    if auth_type(model) == "opencode-go-subscription-api-key"
+      raise Invalid, "Only the isolated Go credential is permitted" unless auth.keys == ["opencode-go"] && auth.dig("opencode-go", "type") == "api"
+      raise Invalid, "Incomplete Go credential" unless auth.dig("opencode-go", "key").is_a?(String) && !auth.dig("opencode-go", "key").empty?
+      raise Invalid, "Go credential must be private" unless (File.stat(path).mode & 0077).zero?
+    else
+      raise Invalid, "Only OpenAI subscription OAuth is permitted" unless auth.keys == ["openai"] && auth.dig("openai", "type") == "oauth"
+      %w[access refresh].each { |key| raise Invalid, "Incomplete subscription credential" unless auth.dig("openai", key).is_a?(String) && !auth.dig("openai", key).empty? }
+    end
     auth
   end
 
@@ -89,11 +111,12 @@ module OpenCodeHarness
     end
   end
 
-  def verify_agent!(agent)
+  def verify_agent!(agent, model: nil)
     raise Invalid, "Not the stock build agent" unless agent["name"] == "build" && agent["native"] == true && !agent["prompt"]
     tools = agent.fetch("tools").select { |_, enabled| enabled }.keys.sort
     raise Invalid, "Unexpected enabled tools: #{tools - LOCAL_TOOLS}" unless (tools - LOCAL_TOOLS).empty?
-    raise Invalid, "Local build/edit tools unavailable" unless (%w[bash read glob grep apply_patch] - tools).empty?
+    editing = model&.start_with?("opencode-go/") ? %w[edit write] : %w[apply_patch]
+    raise Invalid, "Local build/edit tools unavailable" unless (%w[bash read glob grep] + editing - tools).empty?
     rules = agent.fetch("permission")
     (LOCAL_TOOLS + %w[external_directory doom_loop]).each do |tool|
       rule = rules.reverse.find { |item| [tool, "*"].include?(item["permission"]) && item["pattern"] == "*" }

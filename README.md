@@ -137,9 +137,9 @@ isolate each observation. Updates and model-catalog refreshes are disabled.
 
 The pinned executable and supported subscription login are installed separately
 under the evaluation account, without replacing its existing OpenCode setup.
-The approved models are `openai/gpt-6.1-sol` and `openai/gpt-6-luna`, both at medium.
+The OpenAI subscription models are `openai/gpt-6.1-sol` and `openai/gpt-6-luna`, both at medium.
 Anthropic authentication/billing setup remains deferred by the operator; these
-campaigns enable no API keys, paid-credit fallbacks, impersonation plugins or
+OpenAI campaigns enable no API keys, paid-credit fallbacks, impersonation plugins or
 substitution of Claude Code's agent loop. OpenAI documents
 [OpenCode subscription sign-in](https://learn.chatgpt.com/docs/sign-in-with-chatgpt).
 
@@ -154,6 +154,27 @@ program correctness. Select `--profile=gpt-6-luna-oc-medium` for Luna 6, or
 `--profile=gpt-6.1-sol-oc-medium` (the default) for Sol 6.1. Native profiles are
 not renamed or regenerated; the selected native comparison is recorded in the
 campaign manifest.
+
+OpenCode Go uses a separate, private subscription credential and requires operator
+confirmation that **Use balance is off**, with no paid-credit fallback. Its profiles
+are `deepseek-v4.1-flash-oc-high` (the middle supported effort; no medium is exposed)
+and `minimax-m3.1-flash-oc-medium` (the free alias only). Prepare either with
+`--profile=PROFILE --go-balance-fallback-disabled`. The MiniMax catalog entry is
+frozen in `lib/opencode_models/`; the stock executable, prompts and adapters are
+unchanged. Go's native edit/write tools serve the same local editing capability as
+the OpenAI adapter's apply-patch tool.
+
+`tools/opencode_campaign_queue.rb run QUEUE_ROOT` accepts a `queue.json` listing
+those two prepared campaign paths in `campaigns`, DeepSeek first, plus a passing
+`regression-tests.log` in each campaign. It checks the four reusable pilots before
+continuing each campaign. Read-only Go admission checks run between observations,
+outside task timing: paid generation pauses at 95% of any quota window. The queue
+switches to free MiniMax at that boundary, then resumes unfinished DeepSeek work.
+The free alias must still be available; no paid replacement is selected. A `STOP`
+file in the queue or campaign prevents the next observation without interrupting
+an active one. `status` records progress and optional `generation_unit` health;
+a monitor timer records status but does not itself notify an assistant. Generation
+is serial, and validation/benchmarking follow both campaigns.
 
 The stock `serve` and `run --attach` commands use a fresh authenticated loopback
 server for each observation. A read-only subscriber retains native retry-status

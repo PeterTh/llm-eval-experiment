@@ -33,12 +33,16 @@ def hashes(directory)
 end
 
 profile_name = "gpt-6.1-sol-oc-medium"
+go_balance_disabled = false
 OptionParser.new do |options|
   options.banner = "Usage: prepare_opencode_campaign.rb [--profile=PROFILE]"
   options.on("--profile=PROFILE", "Approved OpenCode campaign profile") { |value| profile_name = value }
+  options.on("--go-balance-fallback-disabled", "Operator confirmed Go Use balance is off") { go_balance_disabled = true }
 end.parse!
 raise "Unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
 profile = OpenCodeHarness.campaign_profile(profile_name)
+go_access = profile["access"] == "opencode-go"
+raise "Confirm that Go Use balance is off before preparing this campaign" if go_access && !go_balance_disabled
 repo = File.expand_path("..", __dir__)
 bench_repo = File.expand_path("../benchmarks", repo)
 source_repo = File.join(Dir.home, "llm_para_experiments")
@@ -105,8 +109,11 @@ manifest = { "schema_version" => 1, "campaign_id" => batch, "prepared_at" => Tim
   "opencode_tag_commit" => "e3c4eb242585dcd77be1a867391b7c25fd47ce52", "opencode_binary" => File.join(runtime, "opencode"),
   "opencode_binary_sha256" => OpenCodeHarness::BINARY_SHA256,
   "opencode_release_archive_sha256" => "13a8fb2978302071b86f9d7e00da9c8895f9cd846978379c3bdc6a5333536c9b",
-  "opencode_auth_file" => "/home/llmtest/.local/share/opencode-eval/access/data/opencode/auth.json",
-  "authentication" => "OpenCode built-in ChatGPT Pro/Plus OAuth; no API-key, credit or fallback provider enabled by this campaign",
+  "opencode_auth_file" => go_access ? "/home/llmtest/.local/share/opencode-eval/go-access/data/opencode/auth.json" : "/home/llmtest/.local/share/opencode-eval/access/data/opencode/auth.json",
+  "opencode_access" => go_access ? "opencode-go" : "openai-oauth",
+  "authentication" => go_access ? "Operator-subscribed OpenCode Go Plus; dedicated API key; Use balance confirmed off; no other provider enabled" : "OpenCode built-in ChatGPT Pro/Plus OAuth; no API-key, credit or fallback provider enabled by this campaign",
+  "go_balance_fallback_disabled" => go_access ? go_balance_disabled : nil,
+  "go_free_only" => go_access ? profile.fetch("free_only") : nil,
   "models" => profiles, "benchmarks" => benchmarks, "backends" => backends, "repetitions" => 5,
   "expected_runs" => ids.size, "per_run_timeout_seconds" => 14400, "preflight_ids" => preflights,
   "workspace" => "/home/llmtest/evals/#{batch}", "persistent_results" => results, "runtime_root" => runtime,
@@ -117,7 +124,7 @@ manifest = { "schema_version" => 1, "campaign_id" => batch, "prepared_at" => Tim
   "paused_campaign" => { "path" => fable, "pause_receipt_sha256" => Digest::SHA256.file(pause_path).hexdigest,
     "resume_not_before" => pause.fetch("next_weekly_reset"), "verified_preserved_observations" => preserved.size,
     "constraint" => "Fable remains fully suspended; campaigns never run concurrently under llmtest." },
-  "comparison" => { "native_batch" => profile.fetch("native_batch"), "native_profile" => profile.fetch("native_profile"),
+  "comparison" => { "native_batch" => profile["native_batch"], "native_profile" => profile["native_profile"],
     "native_sol_batch" => "20261006-204623", "native_sol_profile" => "gpt-6.1-sol-medium",
     "native_sonnet_batch" => "20261014-212207", "native_sonnet_profile" => "claude-sonnet-5.5-cc-medium",
     "deferred_profile" => "claude-sonnet-5.5-oc-medium",
@@ -128,6 +135,16 @@ manifest = { "schema_version" => 1, "campaign_id" => batch, "prepared_at" => Tim
   "monitoring" => "Serial admission/cleanup checks between observations, approximately four-hour monitoring after preflight.",
   "accounting" => "Exact native per-request step-finish usage includes compaction; input includes cache, output includes reasoning. Observed scheduled retry waits are excluded from elapsed time; API-only time is unavailable.",
   "next_stages" => ["Commit original generated sources", "Established validation", "Luna/high static timing review of successful MPI/hybrid and all-backend QT; Sol 6.1 adjudication only when uncertain", "Single timing-only correction commit and affected validation", "Established-size scoped benchmarking with hourly checks", "New winner reviews, pricing, package and website integration"] }
+if go_access
+  manifest["comparison"] = {
+    "scope" => "Additional model in the established OpenCode harness; not a native-harness comparison for this exact model.",
+    "interpretation" => "Same sequential inputs, budgets and capability policy. Provider aliases are not immutable snapshots. Stock model-specific prompts/adapters are retained.",
+    "reasoning_selection" => profile_name.start_with?("deepseek") ? "High: supported middle option among low/high/max; no medium option exposed." : "Medium, as in the access smoke test.",
+    "free_offer" => profile.fetch("free_only") ? "Free alias only; stop if unavailable, never silently replace it with a paid model." : nil
+  }
+  manifest["quota_policy"] = "Check Go model availability and all quota windows before each new observation; pause at 95% of any window until its reset. Free-only models bypass paid-quota gating. Checks and waiting are outside generation timing."
+  manifest["next_stages"].unshift("DeepSeek generation first; yield to free MiniMax at a paid-quota boundary, then resume DeepSeek. Finish both before CPU/GPU evaluation.")
+end
 File.write(File.join(campaign, "campaign.json"), JSON.pretty_generate(manifest) + "\n")
 dry = checked("ruby", File.join(runtime, "run.rb"), "--production", "--continue=#{batch}")
 File.write(File.join(campaign, "production-dry-run.txt"), dry)

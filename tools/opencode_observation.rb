@@ -37,7 +37,7 @@ class OpenCodeObservationRunner
     FileUtils.mkdir_p(@state, mode: 0700)
     %w[data/opencode config/opencode cache state home managed tmp].each { |path| FileUtils.mkdir_p(File.join(@state, path), mode: 0700) }
     if authenticate
-      auth = OpenCodeHarness.credential(@spec.fetch("auth_file"))
+      auth = OpenCodeHarness.credential(@spec.fetch("auth_file"), model: @spec.fetch("model"))
       File.write(File.join(@state, "data/opencode/auth.json"), JSON.generate(auth), mode: "w", perm: 0600)
     end
     write(File.join(@state, "config/opencode/opencode.json"), @expected)
@@ -46,14 +46,14 @@ class OpenCodeObservationRunner
     resolved = JSON.parse(capture("debug", "config"))
     agent = JSON.parse(capture("debug", "agent", "build"))
     OpenCodeHarness.verify_config!(resolved, @expected)
-    enabled = OpenCodeHarness.verify_agent!(agent)
+    enabled = OpenCodeHarness.verify_agent!(agent, model: @spec.fetch("model"))
     write(File.join(@state, "prepared.json"), {
       "version" => version, "binary_sha256" => OpenCodeHarness::BINARY_SHA256,
-      "auth_type" => authenticate ? "openai-subscription-oauth" : "none-inspection-only", "model" => @spec.fetch("model"),
+      "auth_type" => authenticate ? OpenCodeHarness.auth_type(@spec.fetch("model")) : "none-inspection-only", "model" => @spec.fetch("model"),
       "reasoning_effort" => @spec.fetch("effort"), "flags" => OpenCodeHarness::FLAGS,
       "requested_config" => @expected, "resolved_config" => resolved,
       "build_agent" => agent, "enabled_tools" => enabled,
-      "catalog" => "bundled in the pinned executable; network refresh disabled",
+      "catalog" => "Pinned executable plus any explicitly frozen model definition; network refresh disabled",
       "title_policy" => "explicit observation ID, no title-generation request",
       "transport" => "stock serve on authenticated loopback + stock run --attach; read-only event capture" })
     puts "OpenCode isolated configuration verified (#{version}; #{enabled.join(', ')})."
@@ -151,7 +151,7 @@ class OpenCodeObservationRunner
       rule = agent.fetch("permission").reverse.find { |item| [permission, "*"].include?(item["permission"]) }
       [tool, !(rule && rule["pattern"] == "*" && rule["action"] == "deny")]
     end
-    enabled = OpenCodeHarness.verify_agent!(agent)
+    enabled = OpenCodeHarness.verify_agent!(agent, model: @spec.fetch("model"))
     raise "Server tools differ from isolated preflight" unless enabled == evidence.fetch("enabled_tools")
     providers = get("/config/providers").fetch("providers")
     raise "Unexpected enabled provider" unless providers.map { |entry| entry.fetch("id") } == [provider]
@@ -167,8 +167,8 @@ class OpenCodeObservationRunner
 
   def run
     evidence = JSON.parse(File.read(File.join(@state, "prepared.json")))
-    raise "Subscription authentication was not prepared" unless evidence.fetch("auth_type") == "openai-subscription-oauth"
-    OpenCodeHarness.credential(File.join(@state, "data/opencode/auth.json"))
+    raise "Subscription authentication was not prepared" unless evidence.fetch("auth_type") == OpenCodeHarness.auth_type(@spec.fetch("model"))
+    OpenCodeHarness.credential(File.join(@state, "data/opencode/auth.json"), model: @spec.fetch("model"))
     start_server
     verify_server!(evidence)
     write(File.join(@state, "opencode-config.txt"), evidence)
@@ -236,8 +236,12 @@ class OpenCodeObservationRunner
     # Refreshes remain private, outside every generated-source/evidence folder.
     auth_path = File.join(@state, "data/opencode/auth.json")
     if File.file?(auth_path)
-      auth = OpenCodeHarness.credential(auth_path)
-      File.write(@spec.fetch("auth_file"), JSON.generate(auth), mode: "w", perm: 0600)
+      auth = OpenCodeHarness.credential(auth_path, model: @spec.fetch("model"))
+      if OpenCodeHarness.auth_type(@spec.fetch("model")) == "openai-subscription-oauth"
+        File.write(@spec.fetch("auth_file"), JSON.generate(auth), mode: "w", perm: 0600)
+      else
+        raise "Go credential unexpectedly changed" unless auth == OpenCodeHarness.credential(@spec.fetch("auth_file"), model: @spec.fetch("model"))
+      end
     end
     # All retained metadata is now in the observation, credentials are back in
     # their private store, and the server is stopped. Do not archive a database

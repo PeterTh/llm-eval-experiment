@@ -41,16 +41,16 @@ module OpenCodeGenerationObservation
     raise Invalid, "Generation budget differs" unless [process, native_process].all? { |record| record["timeout_seconds"] == timeout_seconds }
     raise Invalid, "OpenCode process status differs" unless %w[exit_status term_signal].all? { |key| process[key] == native_process[key] }
     raise Invalid, "OpenCode version changed" unless evidence["version"] == version && evidence["binary_sha256"] == OpenCodeHarness::BINARY_SHA256
-    raise Invalid, "Non-subscription access" unless evidence["auth_type"] == "openai-subscription-oauth"
+    raise Invalid, "Non-subscription access" unless evidence["auth_type"] == OpenCodeHarness.auth_type(model)
     raise Invalid, "Wrong OpenCode model or effort" unless evidence["model"] == model && evidence["reasoning_effort"] == effort
     raise Invalid, "OpenCode isolation flags differ" unless evidence["flags"] == OpenCodeHarness::FLAGS
     expected = OpenCodeHarness.config(model: model, effort: effort)
     raise Invalid, "OpenCode requested settings changed" unless evidence["requested_config"] == expected
     OpenCodeHarness.verify_config!(evidence.fetch("resolved_config"), expected)
-    tools = OpenCodeHarness.verify_agent!(evidence.fetch("build_agent"))
+    tools = OpenCodeHarness.verify_agent!(evidence.fetch("build_agent"), model: model)
     raise Invalid, "OpenCode enabled tools differ" unless evidence["enabled_tools"] == tools
     resolved = evidence.fetch("resolved_model")
-    raise Invalid, "OpenCode medium reasoning was not resolved" unless resolved.dig("options", "reasoningEffort") == effort && resolved.dig("variants", effort, "reasoningEffort") == effort
+    raise Invalid, "OpenCode reasoning was not resolved" unless resolved.dig("options", "reasoningEffort") == effort && resolved.dig("variants", effort, "reasoningEffort") == effort
     id = File.basename(directory)
     info = session.fetch("info")
     sid = info.fetch("id")

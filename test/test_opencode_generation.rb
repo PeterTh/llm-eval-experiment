@@ -136,7 +136,7 @@ class OpenCodeGenerationTest < Minitest::Test
       provider, model_id = model.split("/", 2)
       opencode_fixture(@directory, model: model)
       runner = OpenCodeObservationRunner.allocate
-      runner.instance_variable_set(:@spec, { "model" => model, "effort" => "medium" })
+      runner.instance_variable_set(:@spec, { "model" => model, "effort" => profile.fetch("reasoning_effort") })
       runner.instance_variable_set(:@expected, @evidence.fetch("requested_config"))
       responses = {
         "/config" => @evidence.fetch("resolved_config"), "/agent" => [@evidence.fetch("build_agent")],
@@ -151,7 +151,7 @@ class OpenCodeGenerationTest < Minitest::Test
       error = assert_raises(RuntimeError) { runner.verify_server!(@evidence) }
       assert_equal "Additional or missing models", error.message
       models.delete("gpt-other")
-      models.fetch(model_id)["options"]["reasoningEffort"] = "high"
+      models.fetch(model_id)["options"]["reasoningEffort"] = "low"
       error = assert_raises(RuntimeError) { runner.verify_server!(@evidence) }
       assert_equal "Requested reasoning default differs", error.message
     end
@@ -241,6 +241,46 @@ class OpenCodeGenerationTest < Minitest::Test
 
   def test_luna_controller_reuses_every_pilot_and_never_repeats_accepted_observations
     assert_controller_pilot_reuse("gpt-6-luna-oc-medium")
+  end
+
+  def test_go_controller_reuses_every_pilot_and_never_repeats_accepted_observations
+    assert_controller_pilot_reuse("deepseek-v4.1-flash-oc-high")
+  end
+
+  def test_go_credentials_are_isolated_and_no_openai_or_zen_fallback_is_accepted
+    model = "opencode-go/deepseek-v4.1-flash"
+    auth = File.join(@tmp, "go-auth.json")
+    content = { "opencode-go" => { "type" => "api", "key" => "fixture-key" } }
+    File.write(auth, JSON.generate(content), perm: 0600)
+    assert_equal content, OpenCodeHarness.credential(auth, model: model)
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeHarness.credential(auth) }
+    File.chmod(0644, auth)
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeHarness.credential(auth, model: model) }
+    File.chmod(0600, auth)
+    content["opencode"] = { "type" => "api", "key" => "fixture-zen-key" }
+    File.write(auth, JSON.generate(content))
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeHarness.credential(auth, model: model) }
+  end
+
+  def test_go_profiles_preserve_policy_and_accept_native_edit_tools
+    profile = OpenCodeHarness.campaign_profile("minimax-m3.1-flash-oc-medium")
+    assert_equal true, profile.fetch("free_only")
+    config = OpenCodeHarness.config(model: profile.fetch("model"), effort: "medium")
+    assert_equal ["opencode-go"], config.fetch("enabled_providers")
+    definition = config.dig("provider", "opencode-go", "models", "minimax-m3.1-flash-free")
+    assert_equal 0, definition.dig("cost", "input")
+    assert_equal "medium", definition.dig("options", "reasoningEffort")
+    assert_equal "reasoning_content", definition.dig("interleaved", "field")
+    opencode_fixture(@directory, model: profile.fetch("model"))
+    report = OpenCodeGenerationObservation.read(@directory, model: profile.fetch("model"), effort: "medium")
+    assert_equal "completed", report.fetch("outcome")
+    assert_includes report.fetch("tools"), "edit"
+    refute_includes report.fetch("tools"), "apply_patch"
+    @evidence["auth_type"] = "openai-subscription-oauth"
+    write_opencode_fixture(@directory)
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeGenerationObservation.read(@directory, model: profile.fetch("model"), effort: "medium") }
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeHarness.config(model: "opencode-go/deepseek-v4.1-flash", effort: "medium") }
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeHarness.config(model: "opencode-go/minimax-m3.1-flash", effort: "medium") }
   end
 
   def assert_controller_pilot_reuse(profile_name)

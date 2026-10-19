@@ -5,14 +5,14 @@ require "fileutils"
 module OpenCodeFixture
   def opencode_fixture(directory, timeout: false, model: "openai/gpt-6.1-sol")
     FileUtils.mkdir_p(directory)
-    effort = "medium"
+    effort = OpenCodeHarness::CAMPAIGN_PROFILES.values.find { |profile| profile["model"] == model }.fetch("reasoning_effort")
     provider, model_id = model.split("/", 2)
     config = OpenCodeHarness.config(model: model, effort: effort)
-    tools = %w[apply_patch bash glob grep invalid read skill todowrite]
+    tools = model.start_with?("opencode-go/") ? %w[bash edit glob grep invalid read skill todowrite write] : %w[apply_patch bash glob grep invalid read skill todowrite]
     agent = { "name" => "build", "native" => true, "tools" => tools.to_h { |tool| [tool, true] },
       "permission" => config.fetch("permission").map { |permission, action| { "permission" => permission, "pattern" => "*", "action" => action } } }
     @evidence = { "version" => OpenCodeHarness::VERSION, "binary_sha256" => OpenCodeHarness::BINARY_SHA256,
-      "auth_type" => "openai-subscription-oauth", "model" => model, "reasoning_effort" => effort,
+      "auth_type" => OpenCodeHarness.auth_type(model), "model" => model, "reasoning_effort" => effort,
       "flags" => OpenCodeHarness::FLAGS, "requested_config" => config, "resolved_config" => config,
       "build_agent" => agent, "enabled_tools" => tools,
       "resolved_model" => { "options" => { "reasoningEffort" => effort }, "variants" => { effort => { "reasoningEffort" => effort } } } }

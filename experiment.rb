@@ -126,6 +126,13 @@ REASONING_MAPPING = {
 
 REASONING_EFFORTS_CLAUDE = %w[low medium high xhigh max]
 
+# Approved OpenCode profiles have one authoritative model/effort mapping.
+OpenCodeHarness::CAMPAIGN_PROFILES.each do |name, profile|
+    MODELS[name.to_sym] = 0
+    MODEL_MAPPING[name] = profile.fetch("model")
+    REASONING_MAPPING[name] = profile.fetch("reasoning_effort")
+end
+
 BASE_COST_PER_REQUEST = 0.04 # base cost in dollars for github copilot requests, to multiply with per-model cost factors
 
 PARAMS = "--allow-all-paths --allow-all-tools --no-ask-user --no-color --autopilot"

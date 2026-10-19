@@ -12,8 +12,19 @@ require_relative "../lib/generation_cleanup"
 # Serial orchestration around experiment.rb, not a replacement generation harness.
 # Checks run only between observations; no compilation, validation or performance runs.
 class GenerationCampaign
-  def initialize(root)
+  class QuotaPause < StandardError
+    attr_reader :report
+    def initialize(report)
+      @report = report
+      super("Go quota pause until #{report.fetch('resume_not_before')}")
+    end
+  end
+
+  def initialize(root, go_quota_mode: :wait, stop_files: [])
+    raise "Invalid Go quota mode" unless %i[wait yield].include?(go_quota_mode)
+    @go_quota_mode = go_quota_mode
     @root = File.realpath(root)
+    @stop_files = [File.join(@root, "STOP"), *stop_files]
     @manifest = JSON.parse(File.read(File.join(@root, "campaign.json")))
     @harness = @manifest.fetch("harness", "claude")
     raise "Unsupported generation harness" unless %w[claude codex opencode].include?(@harness)
@@ -83,6 +94,8 @@ class GenerationCampaign
     @preflight_ids.each { |id| execute_observation(id, phase: "preflight") }
     gate
     snapshot("preflight_complete")
+  rescue QuotaPause
+    raise
   rescue StandardError => e
     snapshot("needs_review", error: "#{e.class}: #{e.message}") if locked
     raise
@@ -139,6 +152,8 @@ class GenerationCampaign
     recover_usage!(Dir[File.join(@observations, "*.json")].sort.map { |p| JSON.parse(File.read(p)) }) if @harness == "codex"
     commit_outputs
     snapshot("complete")
+  rescue QuotaPause
+    raise
   rescue StandardError => e
     snapshot("needs_review", error: "#{e.class}: #{e.message}") if locked
     warn "Campaign stopped without repeating completed observations: #{e.message}"
@@ -148,11 +163,13 @@ class GenerationCampaign
   end
 
   def execute_observation(id, baseline: nil, phase: "running")
-    raise "Operator stop requested" if File.exist?(File.join(@root, "STOP"))
+    check_stop!
     directory = File.join(@results, id)
     return observation(id, baseline: baseline) if File.file?(File.join(directory, "timing.txt"))
     raise "Incomplete canonical observation: #{id}" if File.exist?(directory)
     snapshot(phase, active_id: id)
+    ensure_account_idle!
+    wait_for_go_access!(id, phase: phase)
     ensure_account_idle!
     ids_path = File.join(@root, "active-run-ids.txt")
     File.write(ids_path, "#{id}\n")
@@ -200,6 +217,50 @@ class GenerationCampaign
 
   def read_session_usage(reader, requests)
     Open3.capture3("su", "-", "llmtest", "--shell=/bin/bash", "-c", Shellwords.join(reader), stdin_data: JSON.generate(requests))
+  end
+
+  def wait_for_go_access!(id, phase:)
+    return unless @manifest["opencode_access"] == "opencode-go"
+    raise "Go balance fallback must be confirmed disabled" unless @manifest["go_balance_fallback_disabled"] == true
+    model = @manifest.fetch("models").fetch(id.split("_")[1]).fetch("model")
+    FileUtils.mkdir_p(File.join(@root, "quota"))
+    loop do
+      check_stop!
+      report = go_access(model)
+      json("quota/#{id}.json", report)
+      json("quota-latest.json", report.merge("id" => id))
+      if report.fetch("allowed")
+        snapshot(phase, active_id: id)
+        return
+      end
+      deadline = Time.iso8601(report.fetch("resume_not_before"))
+      snapshot("quota_wait", active_id: id)
+      puts "Go quota pause for #{id}: #{report.fetch('blocked_windows').join(', ')}; recheck after #{deadline.utc.iso8601}"
+      raise QuotaPause, report if @go_quota_mode == :yield
+      # Retained observations are untouched. No evaluation account process or
+      # generation clock runs while waiting; STOP is checked at least minutely.
+      loop do
+        check_stop!
+        remaining = deadline - Time.now
+        break if remaining <= 0
+        sleep([remaining, 60].min)
+      end
+      sleep(5) if deadline <= Time.now - 60
+    end
+  end
+
+  def check_stop!
+    raise "Operator stop requested" if @stop_files.any? { |path| File.exist?(path) }
+  end
+
+  def go_access(model)
+    # The private persistent campaign directory is not traversable by llmtest;
+    # use its identical frozen runtime copy, as for the observation runner.
+    helper = File.join(@manifest.fetch("working_directory"), "tools/opencode_go_access.rb")
+    command = Shellwords.join(["ruby", helper, model, @manifest.fetch("opencode_auth_file")])
+    output, error, status = Open3.capture3("su", "-", "llmtest", "--shell=/bin/bash", "-c", command)
+    raise "Go subscription admission failed: #{error.lines.first}" unless status.success?
+    JSON.parse(output)
   end
 
   def ensure_account_idle!

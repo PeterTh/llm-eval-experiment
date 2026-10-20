@@ -195,6 +195,12 @@ and reasoning text already in the transcript. Databases, dependencies, binaries
 and credentials are excluded. Configuration and accounting anomalies stop further
 launches without repeating accepted observations.
 
+An explicitly adjudicated model-caused termination retains the original source,
+transcript, timing and failed exit status; it receives no fresh attempt. A
+hash-bound `generation-termination.txt` records that decision and any recovered
+native metadata. The source still undergoes normal validation. Incomplete token
+counters are retained separately as a lower bound, not a complete cost measure.
+
 Comparisons reuse historical native-harness baselines with the same sequential
 input and budget. Provider model aliases are not immutable snapshots, and
 OpenCode's model-specific prompts and adapters are part of the tested harness;

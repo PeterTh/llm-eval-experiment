@@ -2,6 +2,7 @@
 require "time"
 require_relative "opencode_harness"
 require_relative "experiment_selection"
+require_relative "opencode_generation_termination"
 
 # Static admission and exact accounting from native per-request step-finish
 # counters, including compaction. Never run or grade the generated program here.
@@ -33,13 +34,20 @@ module OpenCodeGenerationObservation
   def read(directory, model:, effort:, version: OpenCodeHarness::VERSION, timeout_seconds: 14400, baseline: nil)
     duration = ExperimentSelection.completed_duration(directory)
     raise Invalid, "Observation has no completion record" unless duration
+    termination = OpenCodeGenerationTermination.read(directory)
     paths = (%w[output.txt timing.txt instruction.txt process-status.txt] + OpenCodeHarness::EVIDENCE_FILES)
       .to_h { |name| [name, File.join(directory, name)] }
+    if termination
+      paths.delete("opencode-process.txt")
+      paths[OpenCodeGenerationTermination::FILENAME] = File.join(directory, OpenCodeGenerationTermination::FILENAME)
+    end
     paths.each { |name, path| raise Invalid, "Missing #{name}" unless File.file?(path) && !File.zero?(path) }
     evidence, session, process = %w[opencode-config.txt opencode-session.txt process-status.txt].map { |name| JSON.parse(File.read(paths.fetch(name))) }
-    native_process = JSON.parse(File.read(paths.fetch("opencode-process.txt")))
-    raise Invalid, "Generation budget differs" unless [process, native_process].all? { |record| record["timeout_seconds"] == timeout_seconds }
-    raise Invalid, "OpenCode process status differs" unless %w[exit_status term_signal].all? { |key| process[key] == native_process[key] }
+    native_process = JSON.parse(File.read(paths.fetch("opencode-process.txt"))) unless termination
+    raise Invalid, "Generation budget differs" unless [process, native_process].compact.all? { |record| record["timeout_seconds"] == timeout_seconds }
+    unless termination
+      raise Invalid, "OpenCode process status differs" unless %w[exit_status term_signal].all? { |key| process[key] == native_process[key] }
+    end
     raise Invalid, "OpenCode version changed" unless evidence["version"] == version && evidence["binary_sha256"] == OpenCodeHarness::BINARY_SHA256
     raise Invalid, "Non-subscription access" unless evidence["auth_type"] == OpenCodeHarness.auth_type(model)
     raise Invalid, "Wrong OpenCode model or effort" unless evidence["model"] == model && evidence["reasoning_effort"] == effort
@@ -127,7 +135,7 @@ module OpenCodeGenerationObservation
     if info["tokens"]
       raise Invalid, "Native session total disagrees with request counters" unless normalize_usage(info["tokens"]) == totals
     end
-    backoff, retries = retry_backoff(events, sid, native_process)
+    backoff, retries = retry_backoff(events, sid, native_process, interrupted: !termination.nil?)
     raise Invalid, "Retry waits exceed duration" if backoff > duration
     report = { "id" => id, "model" => model, "reasoning_effort" => effort, "version" => version,
       "session_id" => sid, "tools" => tools, "tools_called" => calls.uniq.sort,
@@ -143,6 +151,12 @@ module OpenCodeGenerationObservation
         raise Invalid, "OpenCode #{key} differs from accepted preflight" unless report[key] == baseline.fetch(key)
       end
     end
+    if termination
+      raise Invalid, "Terminated session contains another terminal error" unless errors.empty?
+      return report.merge("outcome" => "generation_model_terminated", "usage_complete" => false,
+        "generation_failure_reason" => termination.fetch("reason"),
+        "termination_record_sha256" => termination.fetch("termination_record_sha256"))
+    end
     if [124, 137].include?(process["exit_status"]) && native_process.fetch("cli_wall_seconds") >= timeout_seconds - 2
       return report.merge("outcome" => "generation_timeout", "usage_complete" => false)
     end
@@ -156,7 +170,7 @@ module OpenCodeGenerationObservation
     raise Invalid, e.message
   end
 
-  def retry_backoff(events, sid, process)
+  def retry_backoff(events, sid, process, interrupted: false)
     statuses, seen = [], {}
     events.each do |row|
       event = row.fetch("event")
@@ -169,16 +183,18 @@ module OpenCodeGenerationObservation
       raise Invalid, "Status for unexpected session" unless event.dig("properties", "sessionID") == sid
       statuses << [row.fetch("received_at_ms"), event.dig("properties", "status")]
     end
-    raise Invalid, "Incomplete native status stream" unless statuses.first&.last&.fetch("type") == "busy" && statuses.last&.last&.fetch("type") == "idle"
+    raise Invalid, "Incomplete native status stream" unless statuses.first&.last&.fetch("type") == "busy" &&
+      (interrupted || statuses.last&.last&.fetch("type") == "idle")
+    raise Invalid, "Interrupted retry wait requires separate adjudication" if interrupted && statuses.last&.last&.fetch("type") == "retry"
     raise Invalid, "Native status stream out of order" unless statuses.map(&:first) == statuses.map(&:first).sort
-    finish = Time.iso8601(process.fetch("generation_finished_at")).to_f * 1000
+    finish = Time.iso8601(process.fetch("generation_finished_at")).to_f * 1000 if process
     intervals = statuses.each_cons(2).filter_map do |(at, status), (next_at, _)|
       next unless status.fetch("type") == "retry"
       target = status.fetch("next")
       raise Invalid, "Invalid retry deadline" unless target.is_a?(Numeric) && target.finite?
       # Local SSE receipt timestamps differ from the scheduler by milliseconds;
       # never subtract beyond its explicit deadline, next event, or CLI exit.
-      [0, [target, next_at, finish].min - at].max / 1000.0
+      [0, [target, next_at, finish].compact.min - at].max / 1000.0
     end
     [intervals.sum.round(6), intervals.size]
   end

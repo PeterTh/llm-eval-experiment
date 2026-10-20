@@ -193,12 +193,22 @@ module LocalEvaluation
           effort: evidence.fetch("reasoning_effort"), version: evidence.fetch("version"))
         raise OpenCodeGenerationObservation::Invalid, "OpenCode aggregate identity differs" unless record.fetch("id") == id
         counts = record.fetch("token_counts")
-        result.input_tokens = counts.fetch("input_tokens")
-        result.output_tokens = counts.fetch("output_tokens")
-        result.cached_tokens = counts.fetch("cached_input_tokens")
-        result.cache_write_input_tokens = counts.fetch("cache_write_input_tokens")
-        result.reasoning_output_tokens = counts.fetch("reasoning_output_tokens")
-        result.total_tokens = counts.fetch("total_tokens")
+        result.token_usage_complete = record.fetch("usage_complete")
+        result.generation_outcome = record.fetch("outcome")
+        result.generation_failure_reason = record["generation_failure_reason"]
+        result.termination_record_sha256 = record["termination_record_sha256"]
+        if result.token_usage_complete
+          result.input_tokens = counts.fetch("input_tokens")
+          result.output_tokens = counts.fetch("output_tokens")
+          result.cached_tokens = counts.fetch("cached_input_tokens")
+          result.cache_write_input_tokens = counts.fetch("cache_write_input_tokens")
+          result.reasoning_output_tokens = counts.fetch("reasoning_output_tokens")
+          result.total_tokens = counts.fetch("total_tokens")
+        else
+          # Exact counters for completed requests are only a lower bound when
+          # the final request was interrupted. Never price them as a full task.
+          result.partial_token_counts = counts
+        end
         result.token_usage_source = record.fetch("usage_source")
         result.token_usage_session_id = record.fetch("session_id")
         result.raw_total_time = record.fetch("raw_total_seconds")

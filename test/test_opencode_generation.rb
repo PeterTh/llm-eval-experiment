@@ -178,6 +178,80 @@ class OpenCodeGenerationTest < Minitest::Test
     assert_equal 110, report.fetch("total_tokens")
   end
 
+  def terminated_fixture
+    @session["messages"].last["info"]["finish"] = "tool-calls"
+    @session["messages"].last["parts"].first["reason"] = "tool-calls"
+    tool = { "id" => "part_kill", "messageID" => "msg_interrupted", "sessionID" => @sid, "type" => "tool", "tool" => "bash",
+      "state" => { "status" => "running", "input" => { "command" => "pkill -f black-scholes || true" } } }
+    header = @session["messages"].last["info"].merge("id" => "msg_interrupted", "time" => { "created" => 19000 })
+    header.delete("finish")
+    @session["messages"] << { "info" => header, "parts" => [tool] }
+    @events.pop
+    @process.merge!("exit_status" => 143, "success" => false)
+    write_opencode_fixture(@directory)
+    File.unlink(File.join(@directory, "opencode-process.txt"))
+    receipt = { "schema_version" => 1, "run_id" => @id, "session_id" => @sid,
+      "reason" => "model_caused_termination", "approved_by" => "user", "decision" => "retain_original_without_restart",
+      "usage_complete" => false, "native_process_receipt_available" => false,
+      "incident_sha256" => "a" * 64, "native_export_sha256" => "b" * 64, "termination_tool_part" => tool,
+      "metadata_sha256" => OpenCodeGenerationTermination::METADATA.to_h { |name| [name, Digest::SHA256.file(File.join(@directory, name)).hexdigest] } }
+    File.write(File.join(@directory, OpenCodeGenerationTermination::FILENAME), JSON.generate(receipt))
+    receipt
+  end
+
+  def test_explicit_model_termination_is_retained_with_partial_usage
+    terminated_fixture
+    report = read
+    assert_equal "generation_model_terminated", report.fetch("outcome")
+    refute report.fetch("usage_complete")
+    assert_equal 110, report.fetch("total_tokens")
+    assert_equal 18, report.fetch("total_seconds")
+    refute File.exist?(File.join(@directory, "opencode-process.txt"))
+    File.unlink(File.join(@directory, OpenCodeGenerationTermination::FILENAME))
+    assert_raises(OpenCodeGenerationObservation::Invalid) { read }
+  end
+
+  def test_termination_record_cannot_hide_changed_evidence_or_omit_approval
+    receipt = terminated_fixture
+    receipt["approved_by"] = "automatic"
+    File.write(File.join(@directory, OpenCodeGenerationTermination::FILENAME), JSON.generate(receipt))
+    assert_raises(OpenCodeGenerationObservation::Invalid) { read }
+    receipt["approved_by"] = "user"
+    File.write(File.join(@directory, OpenCodeGenerationTermination::FILENAME), JSON.generate(receipt))
+    File.open(File.join(@directory, "output.txt"), "a") { |file| file.puts("changed") }
+    assert_raises(OpenCodeGenerationObservation::Invalid) { read }
+  end
+
+  def test_partial_usage_is_not_exported_as_a_complete_cost_measurement
+    terminated_fixture
+    pipeline = LocalEvaluation::AggregatePipeline.allocate
+    pipeline.instance_variable_set(:@warnings, {})
+    pipeline.define_singleton_method(:apply_diff_counts) { |*| nil }
+    result = AggregateEvaluation.new("black-scholes", "gpt-6.1-sol-oc-medium", "omp", 1)
+    pipeline.send(:parse_agent_metadata, @id, { "source_path" => @directory }, result)
+    assert_nil result.input_tokens
+    assert_nil result.output_tokens
+    assert_nil result.total_tokens
+    refute result.token_usage_complete
+    assert_equal 110, result.partial_token_counts.fetch("total_tokens")
+    assert_equal "generation_model_terminated", result.generation_outcome
+    assert_nil result.validation_status
+    assert_equal 18, result.total_time
+  end
+
+  def test_controller_does_not_relaunch_an_adjudicated_model_termination
+    terminated_fixture
+    driver = GenerationCampaign.allocate
+    driver.instance_variable_set(:@results, @tmp)
+    driver.define_singleton_method(:check_stop!) { nil }
+    directory = @directory
+    driver.define_singleton_method(:observation) do |_id, baseline: nil|
+      OpenCodeGenerationObservation.read(directory, model: "openai/gpt-6.1-sol", effort: "medium", baseline: baseline)
+    end
+    driver.define_singleton_method(:launch) { |*| raise "Must not relaunch the terminated observation" }
+    assert_equal "generation_model_terminated", driver.execute_observation(@id).fetch("outcome")
+  end
+
   def test_incomplete_native_event_stream_is_rejected
     @events.pop
     write_opencode_fixture(@directory)

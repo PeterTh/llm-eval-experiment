@@ -13,6 +13,7 @@ class AggregateEvaluation
   attr_accessor :input_tokens, :output_tokens, :cached_tokens
   attr_accessor :reasoning_output_tokens, :cache_write_input_tokens, :legacy_reported_tokens
   attr_accessor :token_usage_source, :token_usage_session_id
+  attr_accessor :token_usage_complete, :partial_token_counts, :generation_outcome, :generation_failure_reason, :termination_record_sha256
   attr_accessor :api_time, :total_time
   attr_accessor :raw_api_time, :raw_total_time, :agent_retry_count, :agent_retry_backoff_seconds
   attr_accessor :generation_time_source, :generation_time_recovered, :wrapper_exit_status_available, :generation_recovery_sha256

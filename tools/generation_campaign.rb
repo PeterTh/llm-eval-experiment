@@ -70,6 +70,9 @@ class GenerationCampaign
     end
     path = File.join(@observations, "#{id}.json")
     raise "Completed observation changed: #{id}" if File.file?(path) && JSON.parse(File.read(path)) != report
+    if !File.file?(path) && @manifest["opencode_output_token_policy"]
+      raise "New observation did not use the declared output-token policy" unless report["output_token_policy"] == @manifest.fetch("opencode_output_token_policy")
+    end
     json("observations/#{id}.json", report) unless File.file?(path)
     report
   end
@@ -299,7 +302,13 @@ class GenerationCampaign
     @ids.each do |id|
       required = %w[output.txt timing.txt instruction.txt process-status.txt]
       required << "usage.txt" if @harness == "claude"
-      required.concat(OpenCodeHarness::EVIDENCE_FILES) if @harness == "opencode"
+      if @harness == "opencode"
+        required.concat(OpenCodeHarness::EVIDENCE_FILES)
+        if OpenCodeGenerationTermination.read(File.join(@results, id))
+          required.delete("opencode-process.txt")
+          required << OpenCodeGenerationTermination::FILENAME
+        end
+      end
       required << ClaudeGenerationRecovery::FILENAME if File.file?(File.join(@results, id, ClaudeGenerationRecovery::FILENAME))
       required.each do |name|
         raise "Required metadata ignored: #{id}/#{name}" unless staged.include?("#{@batch}/#{id}/#{name}")

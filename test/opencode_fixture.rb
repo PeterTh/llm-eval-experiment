@@ -3,7 +3,7 @@ require_relative "../lib/opencode_generation_observation"
 require "fileutils"
 
 module OpenCodeFixture
-  def opencode_fixture(directory, timeout: false, model: "openai/gpt-6.1-sol")
+  def opencode_fixture(directory, timeout: false, model: "openai/gpt-6.1-sol", advertised_output: false)
     FileUtils.mkdir_p(directory)
     effort = OpenCodeHarness::CAMPAIGN_PROFILES.values.find { |profile| profile["model"] == model }.fetch("reasoning_effort")
     provider, model_id = model.split("/", 2)
@@ -16,6 +16,13 @@ module OpenCodeFixture
       "flags" => OpenCodeHarness::FLAGS, "requested_config" => config, "resolved_config" => config,
       "build_agent" => agent, "enabled_tools" => tools,
       "resolved_model" => { "options" => { "reasoningEffort" => effort }, "variants" => { effort => { "reasoningEffort" => effort } } } }
+    if OpenCodeHarness.output_token_policy(model)
+      @evidence["resolved_model"]["limit"] = { "context" => 1_000_000, "output" => OpenCodeHarness::GO_OUTPUT_TOKEN_LIMITS.fetch(model) }
+    end
+    if advertised_output
+      @evidence["output_token_policy"] = OpenCodeHarness.output_token_policy(model)
+      @evidence["flags"] = OpenCodeHarness.flags(model: model)
+    end
     @sid = "ses_test"
     @session = { "info" => { "id" => @sid, "version" => OpenCodeHarness::VERSION,
       "title" => File.basename(directory), "directory" => "/evals/#{File.basename(directory)}" }, "messages" => [

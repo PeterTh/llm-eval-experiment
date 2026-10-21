@@ -40,6 +40,13 @@ module OpenCodeHarness
     "OPENCODE_DISABLE_EXTERNAL_SKILLS" => "1", "OPENCODE_DISABLE_LSP_DOWNLOAD" => "1",
     "DISABLE_TELEMETRY" => "1", "DO_NOT_TRACK" => "1", "HISTFILE" => "/dev/null"
   }.freeze
+  OUTPUT_TOKEN_FLAG = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
+  # Advertised limits in the pinned catalog / explicitly frozen model entry.
+  # Verify them again against the stock server before allowing an inference.
+  GO_OUTPUT_TOKEN_LIMITS = {
+    "opencode-go/deepseek-v4.1-flash" => 384_000,
+    "opencode-go/minimax-m3.1-flash-free" => 512_000
+  }.freeze
   class Invalid < StandardError; end
   module_function
 
@@ -64,11 +71,36 @@ module OpenCodeHarness
         "compaction" => { "model" => model, "variant" => effort } } }
   end
 
-  def environment(state)
+  def output_token_policy(model)
+    limit = GO_OUTPUT_TOKEN_LIMITS[model]
+    return nil unless limit
+    { "mode" => "advertised_model_limit", "max_output_tokens" => limit,
+      "environment_variable" => OUTPUT_TOKEN_FLAG }
+  end
+
+  def flags(model: nil)
+    policy = output_token_policy(model)
+    policy ? FLAGS.merge(OUTPUT_TOKEN_FLAG => policy.fetch("max_output_tokens").to_s) : FLAGS
+  end
+
+  def verify_output_token_policy!(evidence, model:)
+    policy = evidence["output_token_policy"]
+    if policy
+      raise Invalid, "Unapproved output-token policy" unless policy == output_token_policy(model)
+      raise Invalid, "Advertised output limit changed" unless evidence.dig("resolved_model", "limit", "output") == policy.fetch("max_output_tokens")
+    end
+    # Historical records retain their exact settings and report shape. An
+    # override without a matching explicit policy is never silently accepted.
+    expected = policy ? flags(model: model) : FLAGS
+    raise Invalid, "OpenCode isolation flags differ" unless evidence["flags"] == expected
+    policy
+  end
+
+  def environment(state, model: nil)
     # Do not inherit provider credentials, experimental flags, proxy settings,
     # remote servers, instruction overrides, or a user's OpenCode configuration.
     removed = ENV.keys.grep(/\A(?:OPENCODE_|XDG_|OPENAI_|ANTHROPIC_|CLAUDE_|CODEX_|GITHUB_TOKEN\z|GH_TOKEN\z|.*_API_KEY\z|.*_PROXY\z|.*_proxy\z)/).to_h { |key| [key, nil] }
-    removed.merge(FLAGS).merge(
+    removed.merge(flags(model: model)).merge(
       "XDG_DATA_HOME" => File.join(state, "data"), "XDG_CONFIG_HOME" => File.join(state, "config"),
       "XDG_CACHE_HOME" => File.join(state, "cache"), "XDG_STATE_HOME" => File.join(state, "state"),
       "OPENCODE_TEST_HOME" => File.join(state, "home"),

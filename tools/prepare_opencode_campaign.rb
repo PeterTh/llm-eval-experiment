@@ -114,6 +114,7 @@ manifest = { "schema_version" => 1, "campaign_id" => batch, "prepared_at" => Tim
   "authentication" => go_access ? "Operator-subscribed OpenCode Go Plus; dedicated API key; Use balance confirmed off; no other provider enabled" : "OpenCode built-in ChatGPT Pro/Plus OAuth; no API-key, credit or fallback provider enabled by this campaign",
   "go_balance_fallback_disabled" => go_access ? go_balance_disabled : nil,
   "go_free_only" => go_access ? profile.fetch("free_only") : nil,
+  "opencode_output_token_policy" => OpenCodeHarness.output_token_policy(profile.fetch("model")),
   "models" => profiles, "benchmarks" => benchmarks, "backends" => backends, "repetitions" => 5,
   "expected_runs" => ids.size, "per_run_timeout_seconds" => 14400, "preflight_ids" => preflights,
   "workspace" => "/home/llmtest/evals/#{batch}", "persistent_results" => results, "runtime_root" => runtime,

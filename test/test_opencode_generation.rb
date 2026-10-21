@@ -134,10 +134,11 @@ class OpenCodeGenerationTest < Minitest::Test
     OpenCodeHarness::CAMPAIGN_PROFILES.each_value do |profile|
       model = profile.fetch("model")
       provider, model_id = model.split("/", 2)
-      opencode_fixture(@directory, model: model)
+      opencode_fixture(@directory, model: model, advertised_output: model.start_with?("opencode-go/"))
       runner = OpenCodeObservationRunner.allocate
       runner.instance_variable_set(:@spec, { "model" => model, "effort" => profile.fetch("reasoning_effort") })
       runner.instance_variable_set(:@expected, @evidence.fetch("requested_config"))
+      runner.instance_variable_set(:@env, OpenCodeHarness.environment(@tmp, model: model))
       responses = {
         "/config" => @evidence.fetch("resolved_config"), "/agent" => [@evidence.fetch("build_agent")],
         "/experimental/tool?provider=#{provider}&model=#{model_id}" => @evidence.fetch("enabled_tools").map { |tool| { "id" => tool } },
@@ -158,7 +159,7 @@ class OpenCodeGenerationTest < Minitest::Test
   end
 
   def test_environment_does_not_inherit_provider_or_harness_overrides
-    keys = %w[OPENAI_API_KEY ANTHROPIC_API_KEY OPENCODE_CONFIG_CONTENT OPENCODE_EXPERIMENTAL HTTP_PROXY]
+    keys = %w[OPENAI_API_KEY ANTHROPIC_API_KEY OPENCODE_CONFIG_CONTENT OPENCODE_EXPERIMENTAL OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX HTTP_PROXY]
     before = keys.to_h { |key| [key, ENV[key]] }
     keys.each { |key| ENV[key] = "test-only" }
     env = OpenCodeHarness.environment(@tmp)
@@ -168,6 +169,95 @@ class OpenCodeGenerationTest < Minitest::Test
     refute env.key?("CODEX_HOME") unless ENV.key?("CODEX_HOME")
   ensure
     before.each { |key, value| value ? ENV[key] = value : ENV.delete(key) }
+  end
+
+  def test_advertised_go_limits_override_inherited_caps_but_leave_openai_unchanged
+    key = OpenCodeHarness::OUTPUT_TOKEN_FLAG
+    before = ENV[key]
+    ENV[key] = "7"
+    { "opencode-go/deepseek-v4.1-flash" => 384_000,
+      "opencode-go/minimax-m3.1-flash-free" => 512_000 }.each do |model, limit|
+      assert_equal limit.to_s, OpenCodeHarness.environment(@tmp, model: model).fetch(key)
+      assert_equal limit, OpenCodeHarness.output_token_policy(model).fetch("max_output_tokens")
+    end
+    assert_nil OpenCodeHarness.environment(@tmp, model: "openai/gpt-6-luna").fetch(key)
+    assert_nil OpenCodeHarness.output_token_policy("openai/gpt-6-luna")
+  ensure
+    ENV[key] = before
+  end
+
+  def test_new_go_policy_is_explicit_while_historical_reports_remain_unchanged
+    model = "opencode-go/deepseek-v4.1-flash"
+    opencode_fixture(@directory, model: model)
+    baseline = OpenCodeGenerationObservation.read(@directory, model: model, effort: "high")
+    refute baseline.key?("output_token_policy")
+    opencode_fixture(@directory, model: model, advertised_output: true)
+    report = OpenCodeGenerationObservation.read(@directory, model: model, effort: "high", baseline: baseline)
+    assert_equal OpenCodeHarness.output_token_policy(model), report.fetch("output_token_policy")
+    assert_equal "completed", report.fetch("outcome")
+    @evidence["flags"] = OpenCodeHarness::FLAGS
+    write_opencode_fixture(@directory)
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeGenerationObservation.read(@directory, model: model, effort: "high") }
+    @evidence["flags"] = OpenCodeHarness.flags(model: model)
+    @evidence["resolved_model"]["limit"]["output"] = 32_000
+    write_opencode_fixture(@directory)
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeGenerationObservation.read(@directory, model: model, effort: "high") }
+    @evidence.delete("output_token_policy")
+    write_opencode_fixture(@directory)
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeGenerationObservation.read(@directory, model: model, effort: "high") }
+  end
+
+  def test_advertised_limit_exhaustion_is_retained_with_exact_usage_not_retried
+    model = "opencode-go/deepseek-v4.1-flash"
+    opencode_fixture(@directory, model: model, advertised_output: true)
+    @session["messages"].last["info"]["finish"] = "length"
+    part = @session["messages"].last["parts"].first
+    part["reason"] = "length"
+    part["tokens"].merge!("output" => 0, "reasoning" => 384_000, "total" => 384_100)
+    write_opencode_fixture(@directory)
+    File.write(File.join(@directory, "output.txt"), "{}\n")
+    report = OpenCodeGenerationObservation.read(@directory, model: model, effort: "high")
+    assert_equal "generation_output_limit", report.fetch("outcome")
+    assert report.fetch("usage_complete")
+    assert_equal 384_100, report.fetch("total_tokens")
+    assert_equal 1, report.fetch("cli_omitted_terminal_accounting_parts")
+    driver = GenerationCampaign.allocate
+    driver.instance_variable_set(:@results, @tmp)
+    driver.define_singleton_method(:check_stop!) { nil }
+    driver.define_singleton_method(:observation) { |_id, baseline: nil| report }
+    driver.define_singleton_method(:launch) { |*| raise "Must not retry an exhausted advertised allowance" }
+    assert_equal report, driver.execute_observation(@id)
+    part["tokens"].merge!("reasoning" => 32_000, "total" => 32_100)
+    write_opencode_fixture(@directory)
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeGenerationObservation.read(@directory, model: model, effort: "high") }
+  end
+
+  def test_commit_preserves_approved_termination_evidence_without_inventing_a_process_receipt
+    terminated_fixture
+    git = ->(*args) do
+      output, status = Open3.capture2e("git", "-C", @tmp, *args)
+      raise output unless status.success?
+      output
+    end
+    git.call("init", "--quiet", "--initial-branch=claude")
+    git.call("config", "user.name", "Campaign Test")
+    git.call("config", "user.email", "campaign-test@example.invalid")
+    File.write(File.join(@tmp, ".gitignore"), "*\n!*/\n!*.txt\n!.gitignore\n")
+    git.call("add", ".gitignore")
+    git.call("commit", "--quiet", "-m", "Fixture")
+    batch = "20261019-000000"
+    results = File.join(@tmp, batch)
+    FileUtils.mkdir_p(results)
+    FileUtils.mv(@directory, File.join(results, @id))
+    driver = GenerationCampaign.allocate
+    { root: @tmp, results: results, batch: batch, ids: [@id], harness: "opencode",
+      manifest: { "source_branch" => "claude", "label" => "Fixture" } }.each do |key, value|
+      driver.instance_variable_set("@#{key}", value)
+    end
+    driver.commit_outputs
+    committed = git.call("ls-files", "--", batch).lines.map(&:strip)
+    assert_includes committed, "#{batch}/#{@id}/generation-termination.txt"
+    refute_includes committed, "#{batch}/#{@id}/opencode-process.txt"
   end
 
   def test_full_budget_timeout_retains_partial_exact_usage

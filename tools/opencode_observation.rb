@@ -17,7 +17,7 @@ class OpenCodeObservationRunner
     @state = @spec.fetch("state")
     @workspace = @spec.fetch("workspace")
     @binary = @spec.fetch("binary")
-    @env = OpenCodeHarness.environment(@state)
+    @env = OpenCodeHarness.environment(@state, model: @spec.fetch("model"))
     @expected = OpenCodeHarness.config(model: @spec.fetch("model"), effort: @spec.fetch("effort"))
     raise "OpenCode executable changed" unless Digest::SHA256.file(@binary).hexdigest == OpenCodeHarness::BINARY_SHA256
   end
@@ -50,12 +50,14 @@ class OpenCodeObservationRunner
     write(File.join(@state, "prepared.json"), {
       "version" => version, "binary_sha256" => OpenCodeHarness::BINARY_SHA256,
       "auth_type" => authenticate ? OpenCodeHarness.auth_type(@spec.fetch("model")) : "none-inspection-only", "model" => @spec.fetch("model"),
-      "reasoning_effort" => @spec.fetch("effort"), "flags" => OpenCodeHarness::FLAGS,
+      "reasoning_effort" => @spec.fetch("effort"), "flags" => OpenCodeHarness.flags(model: @spec.fetch("model")),
       "requested_config" => @expected, "resolved_config" => resolved,
       "build_agent" => agent, "enabled_tools" => enabled,
       "catalog" => "Pinned executable plus any explicitly frozen model definition; network refresh disabled",
       "title_policy" => "explicit observation ID, no title-generation request",
-      "transport" => "stock serve on authenticated loopback + stock run --attach; read-only event capture" })
+      "transport" => "stock serve on authenticated loopback + stock run --attach; read-only event capture"
+    }.merge(OpenCodeHarness.output_token_policy(@spec.fetch("model")) ?
+      { "output_token_policy" => OpenCodeHarness.output_token_policy(@spec.fetch("model")) } : {}))
     puts "OpenCode isolated configuration verified (#{version}; #{enabled.join(', ')})."
   end
 
@@ -163,6 +165,13 @@ class OpenCodeObservationRunner
     raise "Unexpected MCP servers" unless get("/mcp").empty?
     raise "Session isolation failed" unless get("/session").empty?
     evidence.merge!("resolved_config" => actual, "resolved_model" => model, "build_agent" => agent)
+    policy = OpenCodeHarness.output_token_policy(@spec.fetch("model"))
+    raise "Prepared output-token policy differs" unless evidence["output_token_policy"] == policy
+    if policy
+      raise "Output-token environment differs" unless @env.fetch(OpenCodeHarness::OUTPUT_TOKEN_FLAG) == policy.fetch("max_output_tokens").to_s
+    end
+    OpenCodeHarness.verify_output_token_policy!(evidence, model: @spec.fetch("model"))
+    evidence
   end
 
   def run

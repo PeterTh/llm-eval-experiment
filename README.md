@@ -164,6 +164,16 @@ frozen in `lib/opencode_models/`; the stock executable, prompts and adapters are
 unchanged. Go's native edit/write tools serve the same local editing capability as
 the OpenAI adapter's apply-patch tool.
 
+Go requests use each model's advertised per-response output allowance (including
+reasoning), set through the stock `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` option.
+The frozen policy, effective environment flag and resolved model limit are retained
+and cross-checked before inference. Stock context reservation/compaction accounts
+for that allowance; the four-hour task budget is unchanged. Historical observations
+retain their original settings. Operator-approved replacements are limited to
+affected observations, with superseded sources, transcripts and metadata retained
+separately. Exhausting the advertised allowance is a retained generation outcome,
+not grounds for an automatic retry.
+
 `tools/opencode_campaign_queue.rb run QUEUE_ROOT` accepts a `queue.json` listing
 those two prepared campaign paths in `campaigns`, DeepSeek first, plus a passing
 `regression-tests.log` in each campaign. It checks the four reusable pilots before

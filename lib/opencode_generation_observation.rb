@@ -51,7 +51,7 @@ module OpenCodeGenerationObservation
     raise Invalid, "OpenCode version changed" unless evidence["version"] == version && evidence["binary_sha256"] == OpenCodeHarness::BINARY_SHA256
     raise Invalid, "Non-subscription access" unless evidence["auth_type"] == OpenCodeHarness.auth_type(model)
     raise Invalid, "Wrong OpenCode model or effort" unless evidence["model"] == model && evidence["reasoning_effort"] == effort
-    raise Invalid, "OpenCode isolation flags differ" unless evidence["flags"] == OpenCodeHarness::FLAGS
+    output_policy = OpenCodeHarness.verify_output_token_policy!(evidence, model: model)
     expected = OpenCodeHarness.config(model: model, effort: effort)
     raise Invalid, "OpenCode requested settings changed" unless evidence["requested_config"] == expected
     OpenCodeHarness.verify_config!(evidence.fetch("resolved_config"), expected)
@@ -129,7 +129,10 @@ module OpenCodeGenerationObservation
     # agree; no counter is estimated and the original CLI transcript is untouched.
     omitted = steps.keys - transcript_steps.keys
     final_message = messages.last.fetch("info").fetch("id")
-    unless omitted.empty? || (omitted.size == 1 && steps[omitted.first]["messageID"] == final_message && steps[omitted.first]["reason"] == "stop")
+    terminal_reason = messages.last.dig("info", "finish")
+    terminal_reasons = output_policy ? %w[stop length] : %w[stop]
+    unless omitted.empty? || (omitted.size == 1 && steps[omitted.first]["messageID"] == final_message &&
+      terminal_reasons.include?(steps[omitted.first]["reason"]) && steps[omitted.first]["reason"] == terminal_reason)
       raise Invalid, "Nonterminal accounting missing from CLI transcript"
     end
     if info["tokens"]
@@ -146,6 +149,7 @@ module OpenCodeGenerationObservation
       "usage_source" => "opencode_native_step_finish",
       "cli_omitted_terminal_accounting_parts" => omitted.size,
       "sha256" => paths.transform_values { |path| Digest::SHA256.file(path).hexdigest } }
+    report["output_token_policy"] = output_policy if output_policy
     if baseline
       %w[model reasoning_effort version tools resolved_model].each do |key|
         raise Invalid, "OpenCode #{key} differs from accepted preflight" unless report[key] == baseline.fetch(key)
@@ -163,8 +167,19 @@ module OpenCodeGenerationObservation
     raise Invalid, "Generation process failed" unless process["exit_status"] == 0 && process["term_signal"].nil?
     raise Invalid, "Session contains a terminal error" unless errors.empty?
     last = messages.reverse.find { |message| message.dig("info", "role") == "assistant" }
-    raise Invalid, "Missing terminal assistant turn" unless last && last.dig("info", "agent") == "build" && last.dig("info", "finish") == "stop" && last.dig("info", "time", "completed")
+    raise Invalid, "Missing terminal assistant turn" unless last && last.dig("info", "agent") == "build" && last.dig("info", "time", "completed")
     raise Invalid, "Missing exact token usage" if counts.empty? || totals.fetch("total_tokens").zero?
+    if last.dig("info", "finish") == "length" && output_policy
+      terminal_steps = steps.values.select { |part| part["messageID"] == last.dig("info", "id") }
+      unless terminal_steps.size == 1 && terminal_steps.first["reason"] == "length" &&
+        normalize_usage(terminal_steps.first.fetch("tokens"))["output_tokens"] == output_policy.fetch("max_output_tokens")
+        raise Invalid, "Length termination differs from advertised output limit"
+      end
+      # A model exhausting its advertised allowance gets no automatic retry.
+      return report.merge("outcome" => "generation_output_limit", "usage_complete" => true,
+        "generation_failure_reason" => "advertised_output_limit_reached")
+    end
+    raise Invalid, "Missing terminal assistant turn" unless last.dig("info", "finish") == "stop"
     report.merge("outcome" => "completed", "usage_complete" => true)
   rescue KeyError, JSON::ParserError, ArgumentError, TypeError => e
     raise Invalid, e.message

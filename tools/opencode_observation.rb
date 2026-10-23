@@ -7,6 +7,7 @@ require "securerandom"
 require "time"
 require "timeout"
 require_relative "../lib/opencode_harness"
+require_relative "../lib/generation_filesystem"
 
 # Runs as llmtest. A fresh loopback-only stock OpenCode server plus `run --attach`
 # allows a read-only native event subscriber to retain retry waits (which `run
@@ -17,7 +18,7 @@ class OpenCodeObservationRunner
     @state = @spec.fetch("state")
     @workspace = @spec.fetch("workspace")
     @binary = @spec.fetch("binary")
-    @env = OpenCodeHarness.environment(@state, model: @spec.fetch("model"))
+    @env = OpenCodeHarness.environment(GenerationFilesystem::STATE, model: @spec.fetch("model"))
     @expected = OpenCodeHarness.config(model: @spec.fetch("model"), effort: @spec.fetch("effort"))
     raise "OpenCode executable changed" unless Digest::SHA256.file(@binary).hexdigest == OpenCodeHarness::BINARY_SHA256
   end
@@ -27,15 +28,20 @@ class OpenCodeObservationRunner
   end
 
   def capture(*args)
-    output, error, status = Open3.capture3(@env, @binary, *args, chdir: @workspace)
+    output, error, status = Open3.capture3(@env, *filesystem.command(*args), chdir: @workspace)
     raise "OpenCode #{args.first} failed: #{error}" unless status.success?
     output
+  end
+
+  def filesystem
+    @filesystem ||= GenerationFilesystem.new(workspace: @workspace, state: @state, binary: @binary)
   end
 
   def prepare(authenticate: true)
     raise "OpenCode state already exists" if File.exist?(@state)
     FileUtils.mkdir_p(@state, mode: 0700)
-    %w[data/opencode config/opencode cache state home managed tmp].each { |path| FileUtils.mkdir_p(File.join(@state, path), mode: 0700) }
+    %w[data/opencode config/opencode cache state home managed tmp var-tmp].each { |path| FileUtils.mkdir_p(File.join(@state, path), mode: 0700) }
+    isolation_probe = filesystem.verify!
     if authenticate
       auth = OpenCodeHarness.credential(@spec.fetch("auth_file"), model: @spec.fetch("model"))
       File.write(File.join(@state, "data/opencode/auth.json"), JSON.generate(auth), mode: "w", perm: 0600)
@@ -49,6 +55,7 @@ class OpenCodeObservationRunner
     enabled = OpenCodeHarness.verify_agent!(agent, model: @spec.fetch("model"))
     write(File.join(@state, "prepared.json"), {
       "version" => version, "binary_sha256" => OpenCodeHarness::BINARY_SHA256,
+      "filesystem_isolation" => filesystem.evidence.merge("preflight" => isolation_probe),
       "auth_type" => authenticate ? OpenCodeHarness.auth_type(@spec.fetch("model")) : "none-inspection-only", "model" => @spec.fetch("model"),
       "reasoning_effort" => @spec.fetch("effort"), "flags" => OpenCodeHarness.flags(model: @spec.fetch("model")),
       "requested_config" => @expected, "resolved_config" => resolved,
@@ -91,7 +98,7 @@ class OpenCodeObservationRunner
     @password = SecureRandom.hex(32)
     @env["OPENCODE_SERVER_PASSWORD"] = @password
     @server_log = File.open(File.join(@state, "server.log"), "w")
-    @server_pid = Process.spawn(@env, @binary, "serve", "--hostname", "127.0.0.1", "--port", "0",
+    @server_pid = Process.spawn(@env, *filesystem.command("serve", "--hostname", "127.0.0.1", "--port", "0"),
       chdir: @workspace, out: @server_log, err: @server_log)
     Timeout.timeout(30) do
       loop do
@@ -176,15 +183,17 @@ class OpenCodeObservationRunner
 
   def run
     evidence = JSON.parse(File.read(File.join(@state, "prepared.json")))
+    raise "Filesystem isolation evidence differs" unless evidence.fetch("filesystem_isolation").reject { |key, _| key == "preflight" } == filesystem.evidence
+    raise "Filesystem isolation preflight differs" unless filesystem.verify! == evidence.dig("filesystem_isolation", "preflight")
     raise "Subscription authentication was not prepared" unless evidence.fetch("auth_type") == OpenCodeHarness.auth_type(@spec.fetch("model"))
     OpenCodeHarness.credential(File.join(@state, "data/opencode/auth.json"), model: @spec.fetch("model"))
     start_server
     verify_server!(evidence)
     write(File.join(@state, "opencode-config.txt"), evidence)
     start_events
-    argv = [@binary, "run", "--attach", "http://127.0.0.1:#{@port}", "--dir", @workspace,
+    argv = filesystem.command("run", "--attach", "http://127.0.0.1:#{@port}", "--dir", @workspace,
       "--format", "json", "--thinking", "--auto", "--agent", "build", "--model", @spec.fetch("model"),
-      "--variant", @spec.fetch("effort"), "--title", @spec.fetch("id"), @spec.fetch("instruction")]
+      "--variant", @spec.fetch("effort"), "--title", @spec.fetch("id"), @spec.fetch("instruction"))
     started = Time.now
     child = Process.spawn(@env, "timeout", "--kill-after=30s", "#{@spec.fetch('timeout_seconds')}s", *argv,
       chdir: @workspace, in: File::NULL, out: $stdout, err: $stderr)

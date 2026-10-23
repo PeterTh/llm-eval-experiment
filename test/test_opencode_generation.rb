@@ -35,6 +35,18 @@ class OpenCodeGenerationTest < Minitest::Test
     assert_equal 1, report.fetch("retry_count")
   end
 
+  def test_filesystem_isolation_is_checked_when_present_without_rewriting_history
+    refute read.key?("filesystem_isolation")
+    @evidence["filesystem_isolation"] = GenerationFilesystem.policy_details(@session.fetch("info").fetch("directory")).merge(
+      "implementation_sha256" => "a" * 64, "bubblewrap_sha256" => "b" * 64,
+      "preflight" => { "passed" => true, "operator_home_visible" => false, "other_observations_visible" => false })
+    write_opencode_fixture(@directory)
+    assert_equal GenerationFilesystem::POLICY, read.dig("filesystem_isolation", "policy")
+    @evidence["filesystem_isolation"]["private_home"] = false
+    write_opencode_fixture(@directory)
+    assert_raises(OpenCodeGenerationObservation::Invalid) { read }
+  end
+
   def test_compaction_is_counted_but_no_other_model_or_agent_is_allowed
     compact = Marshal.load(Marshal.dump(@session.fetch("messages").last))
     compact["info"].merge!("id" => "msg_compact", "agent" => "compaction")

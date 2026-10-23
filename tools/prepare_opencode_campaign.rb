@@ -10,6 +10,7 @@ require "socket"
 require "optparse"
 require_relative "../lib/experiment_selection"
 require_relative "../lib/opencode_harness"
+require_relative "../lib/generation_filesystem"
 
 # Host-specific campaign preparation. It freezes only committed method sources,
 # never changes the user's worktree, never launches an inference, and preserves
@@ -115,6 +116,7 @@ manifest = { "schema_version" => 1, "campaign_id" => batch, "prepared_at" => Tim
   "go_balance_fallback_disabled" => go_access ? go_balance_disabled : nil,
   "go_free_only" => go_access ? profile.fetch("free_only") : nil,
   "opencode_output_token_policy" => OpenCodeHarness.output_token_policy(profile.fetch("model")),
+  "generation_filesystem_policy" => GenerationFilesystem::POLICY,
   "models" => profiles, "benchmarks" => benchmarks, "backends" => backends, "repetitions" => 5,
   "expected_runs" => ids.size, "per_run_timeout_seconds" => 14400, "preflight_ids" => preflights,
   "workspace" => "/home/llmtest/evals/#{batch}", "persistent_results" => results, "runtime_root" => runtime,

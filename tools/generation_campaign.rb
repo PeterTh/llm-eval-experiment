@@ -73,6 +73,9 @@ class GenerationCampaign
     if !File.file?(path) && @manifest["opencode_output_token_policy"]
       raise "New observation did not use the declared output-token policy" unless report["output_token_policy"] == @manifest.fetch("opencode_output_token_policy")
     end
+    if !File.file?(path) && @manifest["generation_filesystem_policy"]
+      raise "New observation did not use the required filesystem isolation" unless report.dig("filesystem_isolation", "policy") == @manifest.fetch("generation_filesystem_policy")
+    end
     json("observations/#{id}.json", report) unless File.file?(path)
     report
   end

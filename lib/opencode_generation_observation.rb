@@ -3,6 +3,7 @@ require "time"
 require_relative "opencode_harness"
 require_relative "experiment_selection"
 require_relative "opencode_generation_termination"
+require_relative "generation_filesystem"
 
 # Static admission and exact accounting from native per-request step-finish
 # counters, including compaction. Never run or grade the generated program here.
@@ -64,6 +65,14 @@ module OpenCodeGenerationObservation
     sid = info.fetch("id")
     raise Invalid, "Session identity differs" unless info["title"] == id && !info["parentID"] && File.basename(info.fetch("directory")) == id
     raise Invalid, "Session version differs" unless info["version"] == version
+    filesystem = evidence["filesystem_isolation"]
+    if filesystem
+      begin
+        GenerationFilesystem.verify_evidence!(filesystem, workspace: info.fetch("directory"))
+      rescue RuntimeError => e
+        raise Invalid, e.message
+      end
+    end
     provider_id, model_id = model.split("/", 2)
     steps, calls, errors = {}, [], []
     messages = session.fetch("messages")
@@ -150,6 +159,7 @@ module OpenCodeGenerationObservation
       "cli_omitted_terminal_accounting_parts" => omitted.size,
       "sha256" => paths.transform_values { |path| Digest::SHA256.file(path).hexdigest } }
     report["output_token_policy"] = output_policy if output_policy
+    report["filesystem_isolation"] = filesystem if filesystem
     if baseline
       %w[model reasoning_effort version tools resolved_model].each do |key|
         raise Invalid, "OpenCode #{key} differs from accepted preflight" unless report[key] == baseline.fetch(key)

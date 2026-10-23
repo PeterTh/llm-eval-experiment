@@ -327,6 +327,38 @@ class OpenCodeGenerationTest < Minitest::Test
     assert_equal "generation_model_terminated", result.generation_outcome
     assert_nil result.validation_status
     assert_equal 18, result.total_time
+    pipeline.instance_variable_set(:@run_dir, @tmp)
+    pipeline.send(:write_outputs, { @id => result })
+    row = CSV.read(File.join(@tmp, "aggregate_results.csv"), headers: true).first
+    %w[input_tokens output_tokens cached_tokens total_tokens reasoning_output_tokens cache_write_input_tokens].each do |field|
+      assert_nil row.fetch(field), field
+    end
+    assert_equal "false", row.fetch("token_usage_complete")
+    assert_equal result.partial_token_counts, JSON.parse(row.fetch("partial_token_counts"))
+    assert_equal "generation_model_terminated", row.fetch("generation_outcome")
+    assert_equal "model_caused_termination", row.fetch("generation_failure_reason")
+    assert_equal result.termination_record_sha256, row.fetch("termination_record_sha256")
+  end
+
+  def test_complete_and_legacy_usage_csv_fields_remain_distinct
+    pipeline = LocalEvaluation::AggregatePipeline.allocate
+    pipeline.instance_variable_set(:@warnings, {})
+    pipeline.instance_variable_set(:@run_dir, @tmp)
+    pipeline.define_singleton_method(:apply_diff_counts) { |*| nil }
+    complete = AggregateEvaluation.new("black-scholes", "gpt-6.1-sol-oc-medium", "omp", 1)
+    pipeline.send(:parse_agent_metadata, @id, { "source_path" => @directory }, complete)
+    legacy = AggregateEvaluation.new("black-scholes", "legacy", "omp", 1)
+    pipeline.send(:write_outputs, { @id => complete, "legacy" => legacy })
+    rows = CSV.read(File.join(@tmp, "aggregate_results.csv"), headers: true)
+    assert_equal "true", rows.first.fetch("token_usage_complete")
+    assert_equal "completed", rows.first.fetch("generation_outcome")
+    assert_equal "110", rows.first.fetch("total_tokens")
+    %w[partial_token_counts generation_failure_reason termination_record_sha256].each do |field|
+      assert_nil rows.first.fetch(field), field
+    end
+    %w[token_usage_complete partial_token_counts generation_outcome generation_failure_reason termination_record_sha256].each do |field|
+      assert_nil rows[-1].fetch(field), field
+    end
   end
 
   def test_controller_does_not_relaunch_an_adjudicated_model_termination

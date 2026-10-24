@@ -111,6 +111,17 @@ and its token/API counters remain cumulative. The final cumulative totals are
 counted once. Changed identities/capabilities or unexplained reinitialization
 still stop the campaign; original transcripts are never rewritten.
 
+New Claude Code and OpenCode observations run inside a mount allowlist: only
+the current workspace, fresh private home/scratch, read-only system tools and
+the pinned harness executable are visible. CPU/GPU and network access remain
+unchanged. The trusted outer driver verifies isolation before inference; there
+is no unrestricted fallback. Claude retains a compact `claude-filesystem.txt`
+receipt, excludes setup and credential synchronization from task time, and
+preserves refreshed subscription credentials outside the published outputs.
+`tools/check_claude_filesystem.rb PINNED_EXECUTABLE` checks CLI startup, visibility,
+MPI/OpenMP, CUDA and cleanup as `llmtest`, without a model request. A frozen
+campaign needs an explicit recorded launcher amendment before using this policy.
+
 After each harness invocation, the supervisor verifies that the reserved evaluation
 account has no processes left. Any survivors are sent SIGKILL as that account,
 with at most two seconds of polling for their disappearance. An already-empty

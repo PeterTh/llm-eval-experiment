@@ -15,7 +15,7 @@ class GenerationFilesystem
   def initialize(workspace:, state:, binary:)
     @workspace, @state, @binary = workspace, state, binary
     raise "Unsafe observation workspace" unless workspace.match?(%r{\A/home/llmtest/evals/[^/]+/[^/]+\z})
-    raise "Unsafe observation state" unless state.match?(%r{\A/tmp/opencode-observation-[^/]+/private\z})
+    raise "Unsafe observation state" unless state.match?(%r{\A/tmp/(?:opencode|claude)-observation-[^/]+/private\z})
     [workspace, state, binary].each do |path|
       raise "Noncanonical isolation path: #{path}" unless File.realpath(path) == path
     end

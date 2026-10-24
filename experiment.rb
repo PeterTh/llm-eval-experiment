@@ -590,7 +590,23 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
             reasoning_effort = REASONING_MAPPING[model] || "xhigh"
             command = "#{command_prefix} \"#{CODEX_BINARY}\" --model #{actual_model_id} -c model_reasoning_effort=\"#{reasoning_effort}\" #{PARAMS_CODEX} exec \"#{instruction}\" > output.txt 2>&1"
         elsif HARNESS == :claude
-            command = claude_command(command_prefix, actual_model_id, REASONING_MAPPING.fetch(model), instruction)
+            state_parent = Dir.mktmpdir("claude-observation-", "/tmp")
+            FileUtils.chmod(01777, state_parent)
+            spec_path = File.join(state_parent, "spec.json")
+            spec = { "id" => id, "binary" => File.realpath(CLAUDE_BINARY),
+                "state" => File.join(state_parent, "private"), "workspace" => bench_path,
+                "model" => actual_model_id, "effort" => REASONING_MAPPING.fetch(model),
+                "instruction" => instruction, "timeout_seconds" => MAX_TIME_SECONDS,
+                "flags" => Shellwords.split(PARAMS_CLAUDE),
+                "environment" => Shellwords.split(ENV_CLAUDE).to_h { |entry| entry.split("=", 2) } }
+            File.write(spec_path, JSON.pretty_generate(spec) + "\n")
+            runner = File.expand_path("tools/claude_observation.rb", __dir__)
+            preparation_started = Time.now
+            preparation = Shellwords.join(["ruby", runner, "prepare", spec_path])
+            raise "Claude isolation preparation failed" unless system("su", "-", EVAL_USER, "--shell=/bin/bash", "-c", preparation)
+            start_time += Time.now - preparation_started
+            command = Shellwords.join(["ruby", runner, "run", spec_path]) +
+                " > #{Shellwords.escape(File.join(bench_path, 'output.txt'))} 2>&1"
         elsif HARNESS == :opencode
             # Scratch is outside the generated-source folder and on local disk.
             # It is created after the existing residue sweep, never shared with
@@ -621,6 +637,14 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
     end
 
     end_time = Time.now
+    claude_collection_ok = true
+    if HARNESS == :claude
+        evidence_path = File.join(bench_path, "claude-filesystem.txt")
+        raise "Claude isolation evidence missing; workspace retained" unless File.file?(evidence_path)
+        claude_process = JSON.parse(File.read(evidence_path))
+        end_time = Time.iso8601(claude_process.fetch("generation_finished_at"))
+        claude_collection_ok = agent_status&.exitstatus == claude_process["exit_status"]
+    end
     opencode_process = nil
     opencode_collection_ok = true
     if HARNESS == :opencode && File.file?(File.join(bench_path, "opencode-process.txt"))
@@ -690,7 +714,7 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
     # move everything to the target directory, so that subsequent agent runs cannot access the results
     FileUtils.mkdir_p(EVAL_TARGET_DIR)
     FileUtils.mv(bench_path, EVAL_TARGET_DIR)
-    if HARNESS == :opencode && state_parent && !File.exist?(File.join(state_parent, "private"))
+    if %i[claude opencode].include?(HARNESS) && state_parent && !File.exist?(File.join(state_parent, "private"))
         FileUtils.remove_entry(state_parent)
     end
 
@@ -703,6 +727,7 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
     # post-generation collection/cleanup failure. A repair must not force a new
     # model invocation when the completed observation's evidence is recoverable.
     raise "OpenCode evidence collection failed; native result retained" unless opencode_collection_ok
+    raise "Claude evidence collection failed; native result retained" unless claude_collection_ok
 
     $times << duration
     avg_time = $times.sum / $times.size

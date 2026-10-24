@@ -36,6 +36,36 @@ class ClaudeGenerationObservationTest < Minitest::Test
     # The checker does not demand that the generated program changed or passes validation.
   end
 
+  def isolated_record
+    @init["cwd"] = "/home/llmtest/evals/20261011-092100/#{File.basename(@directory)}"
+    { "model" => @model, "version" => "2.1.287", "timeout_seconds" => 14400,
+      "exit_status" => 0, "term_signal" => nil,
+      "filesystem_isolation" => GenerationFilesystem.policy_details(@init.fetch("cwd")).merge(
+        "implementation_sha256" => "a" * 64, "bubblewrap_sha256" => "b" * 64,
+        "preflight" => { "passed" => true, "operator_home_visible" => false, "other_observations_visible" => false }) }
+  end
+
+  def test_isolated_evidence_is_retained_without_changing_legacy_reports
+    evidence = isolated_record
+    File.write(File.join(@directory, "claude-filesystem.txt"), JSON.generate(evidence))
+    report = read(batch: "20261011-092100")
+    assert_equal evidence.fetch("filesystem_isolation"), report.fetch("filesystem_isolation")
+    assert_equal 5, report.fetch("sha256").size
+    assert_equal 100, report.fetch("total_tokens")
+    assert_raises(ClaudeGenerationObservation::Invalid) { read(batch: "20261010-092100") }
+  end
+
+  def test_failed_or_wrong_isolation_is_not_admitted
+    evidence = isolated_record
+    path = File.join(@directory, "claude-filesystem.txt")
+    evidence["filesystem_isolation"]["preflight"]["passed"] = false
+    File.write(path, JSON.generate(evidence))
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+    evidence = isolated_record.merge("version" => "another version")
+    File.write(path, JSON.generate(evidence))
+    assert_raises(ClaudeGenerationObservation::Invalid) { read }
+  end
+
   def test_model_fallback_and_auxiliary_usage_are_not_mislabeled
     @result.fetch("modelUsage")["other"] = @result.fetch("modelUsage").fetch(@model)
     assert_raises(ClaudeGenerationObservation::Invalid) { read }

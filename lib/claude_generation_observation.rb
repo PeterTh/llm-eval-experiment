@@ -3,6 +3,7 @@ require "json"
 require "digest"
 require_relative "experiment_selection"
 require_relative "claude_generation_recovery"
+require_relative "generation_filesystem"
 
 # Read completed generation records only: never compile, execute, or grade the program.
 module ClaudeGenerationObservation
@@ -102,6 +103,26 @@ module ClaudeGenerationObservation
       "session_id" => init.fetch("session_id"), "tools" => tools, "plugins" => plugins,
       "tools_called" => calls.uniq.sort, "raw_total_seconds" => duration,
       "sha256" => paths.transform_values { |p| Digest::SHA256.file(p).hexdigest } }
+    isolation_path = File.join(directory, "claude-filesystem.txt")
+    if File.file?(isolation_path)
+      isolation = JSON.parse(File.read(isolation_path))
+      workspace = isolation.fetch("filesystem_isolation").fetch("workspace")
+      unless workspace.match?(%r{\A/home/llmtest/evals/\d{8}-\d{6}/#{Regexp.escape(File.basename(directory))}\z}) &&
+          init["cwd"] == workspace && (!batch || File.basename(File.dirname(workspace)) == batch)
+        raise Invalid, "Isolated workspace identity differs"
+      end
+      begin
+        GenerationFilesystem.verify_evidence!(isolation.fetch("filesystem_isolation"), workspace: workspace)
+      rescue RuntimeError => e
+        raise Invalid, e.message
+      end
+      unless isolation.values_at("model", "version", "timeout_seconds", "exit_status", "term_signal") ==
+          [model, version, timeout_seconds, process["exit_status"], process["term_signal"]]
+        raise Invalid, "Isolated CLI identity/status differs"
+      end
+      report["filesystem_isolation"] = isolation.fetch("filesystem_isolation")
+      report.fetch("sha256")["claude-filesystem.txt"] = Digest::SHA256.file(isolation_path).hexdigest
+    end
     if result.nil? && [124, 137].include?(process["exit_status"]) && duration >= timeout_seconds - 2
       return report.merge("outcome" => "generation_timeout", "usage_available" => false)
     end

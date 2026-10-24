@@ -36,6 +36,15 @@ class GenerationFilesystemTest < Minitest::Test
     end
   end
 
+  def test_claude_observation_uses_the_same_allowlist
+    fs = GenerationFilesystem.allocate
+    fs.instance_variable_set(:@workspace, @workspace)
+    fs.instance_variable_set(:@state, "/tmp/claude-observation-test/private")
+    fs.instance_variable_set(:@binary, "/opt/claude")
+    assert_includes fs.prefix.each_cons(3).to_a,
+      ["--bind", "/tmp/claude-observation-test/private/home", "/home/llmtest"]
+  end
+
   def test_evidence_requires_successful_probe_and_exact_policy
     evidence = GenerationFilesystem.policy_details(@workspace).merge(
       "implementation_sha256" => "a" * 64, "bubblewrap_sha256" => "b" * 64,

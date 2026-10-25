@@ -142,6 +142,38 @@ class OpenCodeGenerationTest < Minitest::Test
     assert_equal "opencode_native_step_finish", result.token_usage_source
   end
 
+  def test_haiku_uses_native_anthropic_medium_and_keeps_native_comparison
+    profile = OpenCodeHarness.campaign_profile("claude-haiku-5.5-oc-medium")
+    assert_equal "20261012-111947", profile.fetch("native_batch")
+    assert_equal "claude-haiku-5.5-cc-medium", profile.fetch("native_profile")
+    opencode_fixture(@directory, model: profile.fetch("model"), advertised_output: true)
+    report = OpenCodeGenerationObservation.read(@directory, model: profile.fetch("model"), effort: "medium")
+    assert_equal 110, report.fetch("total_tokens")
+    assert_equal 128_000, report.dig("output_token_policy", "max_output_tokens")
+    options = @evidence.fetch("resolved_model").fetch("options")
+    assert_equal "medium", options.fetch("effort")
+    assert_equal({ "type" => "adaptive", "display" => "summarized" }, options.fetch("thinking"))
+    refute options.key?("reasoningEffort")
+    @evidence["resolved_model"]["api"]["npm"] = "@ai-sdk/openai-compatible"
+    write_opencode_fixture(@directory)
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeGenerationObservation.read(@directory, model: profile.fetch("model"), effort: "medium") }
+  end
+
+  def test_haiku_rejects_wrong_thinking_mode_and_beam_preserves_capability_policy
+    model = "opencode-go/claude-haiku-5-5"
+    opencode_fixture(@directory, model: model, advertised_output: true)
+    @evidence["resolved_model"]["variants"]["medium"]["thinking"]["type"] = "disabled"
+    write_opencode_fixture(@directory)
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeGenerationObservation.read(@directory, model: model, effort: "medium") }
+    profile = OpenCodeHarness.campaign_profile("beam-1.0-oc-medium")
+    assert profile.fetch("free_only")
+    assert_equal "opencode-go/beam-free", profile.fetch("model")
+    opencode_fixture(@directory, model: profile.fetch("model"), advertised_output: true)
+    report = OpenCodeGenerationObservation.read(@directory, model: profile.fetch("model"), effort: "medium")
+    assert_equal 131_072, report.dig("output_token_policy", "max_output_tokens")
+    OpenCodeHarness::FORBIDDEN_TOOLS.each { |tool| assert_equal "deny", @evidence.dig("requested_config", "permission", tool) }
+  end
+
   def test_server_inspection_uses_each_requested_model_and_rejects_fallbacks
     OpenCodeHarness::CAMPAIGN_PROFILES.each_value do |profile|
       model = profile.fetch("model")
@@ -164,8 +196,9 @@ class OpenCodeGenerationTest < Minitest::Test
       error = assert_raises(RuntimeError) { runner.verify_server!(@evidence) }
       assert_equal "Additional or missing models", error.message
       models.delete("gpt-other")
-      models.fetch(model_id)["options"]["reasoningEffort"] = "low"
-      error = assert_raises(RuntimeError) { runner.verify_server!(@evidence) }
+      key = model == "opencode-go/claude-haiku-5-5" ? "effort" : "reasoningEffort"
+      models.fetch(model_id)["options"][key] = "low"
+      error = assert_raises(OpenCodeHarness::Invalid) { runner.verify_server!(@evidence) }
       assert_equal "Requested reasoning default differs", error.message
     end
   end

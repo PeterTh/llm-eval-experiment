@@ -28,6 +28,17 @@ module OpenCodeHarness
       "label" => "MiniMax M3.1 Flash OpenCode medium", "slug" => "minimax31-flash-opencode-medium", "unit_slug" => "minimax31-oc",
       "access" => "opencode-go", "free_only" => true,
       "definition" => "minimax-m3.1-flash-free.json"
+    }.freeze,
+    "claude-haiku-5.5-oc-medium" => {
+      "model" => "opencode-go/claude-haiku-5-5", "reasoning_effort" => "medium",
+      "label" => "Haiku 5.5 OpenCode medium", "slug" => "haiku55-opencode-medium", "unit_slug" => "haiku55-oc",
+      "access" => "opencode-go", "free_only" => false,
+      "native_batch" => "20261012-111947", "native_profile" => "claude-haiku-5.5-cc-medium"
+    }.freeze,
+    "beam-1.0-oc-medium" => {
+      "model" => "opencode-go/beam-free", "reasoning_effort" => "medium",
+      "label" => "Beam 1.0 OpenCode medium", "slug" => "beam10-opencode-medium", "unit_slug" => "beam10-oc",
+      "access" => "opencode-go", "free_only" => true, "definition" => "beam-free.json"
     }.freeze
   }.freeze
   FORBIDDEN_TOOLS = %w[webfetch websearch task question plan_enter plan_exit].freeze
@@ -45,7 +56,9 @@ module OpenCodeHarness
   # Verify them again against the stock server before allowing an inference.
   GO_OUTPUT_TOKEN_LIMITS = {
     "opencode-go/deepseek-v4.1-flash" => 384_000,
-    "opencode-go/minimax-m3.1-flash-free" => 512_000
+    "opencode-go/minimax-m3.1-flash-free" => 512_000,
+    "opencode-go/claude-haiku-5-5" => 128_000,
+    "opencode-go/beam-free" => 131_072
   }.freeze
   class Invalid < StandardError; end
   module_function
@@ -59,7 +72,7 @@ module OpenCodeHarness
     raise Invalid, "Unapproved OpenCode model/access route" unless profile
     provider, model_id = model.split("/", 2)
     definition = profile["definition"] ? JSON.parse(File.read(File.join(__dir__, "opencode_models", profile.fetch("definition")))).fetch("config") : {}
-    definition["options"] = { "reasoningEffort" => effort }
+    definition["options"] = reasoning_options(model, effort)
     { "$schema" => "https://opencode.ai/config.json", "model" => model, "small_model" => model,
       "default_agent" => "build", "autoupdate" => false, "share" => "disabled",
       "enabled_providers" => [provider], "plugin" => [], "mcp" => {}, "instructions" => [],
@@ -69,6 +82,25 @@ module OpenCodeHarness
       } } },
       "agent" => { "build" => { "variant" => effort },
         "compaction" => { "model" => model, "variant" => effort } } }
+  end
+
+  def reasoning_options(model, effort)
+    if model == "opencode-go/claude-haiku-5-5"
+      # Stock 1.19.3 Anthropic adaptive-thinking variant, not an OAI option.
+      { "thinking" => { "type" => "adaptive", "display" => "summarized" }, "effort" => effort }
+    else
+      { "reasoningEffort" => effort }
+    end
+  end
+
+  def verify_reasoning!(resolved, model:, effort:)
+    expected = reasoning_options(model, effort)
+    raise Invalid, "Requested reasoning is unavailable" unless expected.all? { |key, value| resolved.dig("variants", effort, key) == value }
+    raise Invalid, "Requested reasoning default differs" unless expected.all? { |key, value| resolved.dig("options", key) == value }
+    if model == "opencode-go/claude-haiku-5-5"
+      raise Invalid, "Haiku must use the stock Anthropic adapter" unless resolved.dig("api", "npm") == "@ai-sdk/anthropic"
+      raise Invalid, "Unexpected Haiku reasoning override" if resolved.fetch("options").key?("reasoningEffort")
+    end
   end
 
   def output_token_policy(model)

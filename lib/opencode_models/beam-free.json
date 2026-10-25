@@ -1,0 +1,19 @@
+{
+  "source": "https://models.dev/api.json",
+  "retrieved_at": "2026-10-25",
+  "model": "opencode-go/beam-free",
+  "canonical_model_id": "reflection/beam-1.0-501b-a23b",
+  "model_card": "https://reflection.ai/beam-model-card",
+  "note": "Published model metadata missing from the pinned CLI catalog; no custom prompt or adapter. Free alias only, no paid substitute. Medium uses the stock OpenAI-compatible reasoning variant.",
+  "config": {
+    "name": "Beam Free",
+    "attachment": false,
+    "reasoning": true,
+    "tool_call": true,
+    "interleaved": {"field": "reasoning_content"},
+    "temperature": true,
+    "modalities": {"input": ["text"], "output": ["text"]},
+    "limit": {"context": 1048576, "output": 131072},
+    "cost": {"input": 0, "output": 0, "cache_read": 0}
+  }
+}

@@ -59,7 +59,7 @@ module OpenCodeGenerationObservation
     tools = OpenCodeHarness.verify_agent!(evidence.fetch("build_agent"), model: model)
     raise Invalid, "OpenCode enabled tools differ" unless evidence["enabled_tools"] == tools
     resolved = evidence.fetch("resolved_model")
-    raise Invalid, "OpenCode reasoning was not resolved" unless resolved.dig("options", "reasoningEffort") == effort && resolved.dig("variants", effort, "reasoningEffort") == effort
+    OpenCodeHarness.verify_reasoning!(resolved, model: model, effort: effort)
     id = File.basename(directory)
     info = session.fetch("info")
     sid = info.fetch("id")

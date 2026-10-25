@@ -8,12 +8,13 @@ require "time"
 require_relative "opencode_observation"
 
 abort "Run as llmtest" unless Process.uid == Etc.getpwnam("llmtest").uid
+profile = OpenCodeHarness.campaign_profile(ARGV.fetch(1, "deepseek-v4.1-flash-oc-high"))
 root = Dir.mktmpdir("opencode-observation-filesystem-preflight-", "/tmp")
 workspace_root = File.join("/home/llmtest/evals", File.basename(root))
 workspace = File.join(workspace_root, "probe")
 FileUtils.mkdir_p(workspace)
 spec = { "id" => "filesystem-preflight", "state" => File.join(root, "private"),
-  "workspace" => workspace, "model" => "opencode-go/deepseek-v4.1-flash", "effort" => "high",
+  "workspace" => workspace, "model" => profile.fetch("model"), "effort" => profile.fetch("reasoning_effort"),
   "binary" => ARGV.fetch(0),
   "auth_file" => "/home/llmtest/.local/share/opencode-eval/go-access/data/opencode/auth.json" }
 path = File.join(root, "spec.json")
@@ -23,7 +24,14 @@ begin
   runner.prepare
   evidence = JSON.parse(File.read(File.join(spec.fetch("state"), "prepared.json")))
   runner.start_server
-  runner.verify_server!(evidence)
+  begin
+    runner.verify_server!(evidence)
+  rescue OpenCodeHarness::Invalid
+    provider, model_id = spec.fetch("model").split("/", 2)
+    native = runner.get("/config/providers").fetch("providers").find { |entry| entry["id"] == provider }
+    warn JSON.generate({ "rejected_model_metadata" => native&.fetch("models", {})&.fetch(model_id, nil) })
+    raise
+  end
   isolation = runner.filesystem
   run = lambda do |*args|
     out, err, status = Open3.capture3(*isolation.prefix, *args)
@@ -63,7 +71,8 @@ begin
   checks = run.call("/bin/bash", "-c", 'test ! -e /home/petert/llm_para_experiments && test ! -e /tmp/deepseek-contamination-marker-audit-20261023.json && test ! -e /proc/1/root/home/petert && test ! -e /home/llmtest/.local/share/opencode-eval/go-access && getent hosts opencode.ai >/dev/null && echo visibility-and-dns-ok')
   puts JSON.generate({ "checked_at" => Time.now.utc.iso8601, "inferences_launched" => 0,
     "filesystem_isolation" => evidence.fetch("filesystem_isolation"),
-    "model" => spec.fetch("model"), "policy" => evidence.fetch("output_token_policy"),
+    "model" => spec.fetch("model"), "effort" => spec.fetch("effort"), "policy" => evidence.fetch("output_token_policy"),
+    "resolved_model" => evidence.fetch("resolved_model"),
     "version" => evidence.fetch("version"), "enabled_tools" => evidence.fetch("enabled_tools"),
     "hybrid_probe" => hybrid, "cuda_probe" => cuda, "visibility_and_dns" => checks })
 ensure

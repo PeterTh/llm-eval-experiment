@@ -15,7 +15,9 @@ module OpenCodeFixture
       "auth_type" => OpenCodeHarness.auth_type(model), "model" => model, "reasoning_effort" => effort,
       "flags" => OpenCodeHarness::FLAGS, "requested_config" => config, "resolved_config" => config,
       "build_agent" => agent, "enabled_tools" => tools,
-      "resolved_model" => { "options" => { "reasoningEffort" => effort }, "variants" => { effort => { "reasoningEffort" => effort } } } }
+      "resolved_model" => { "options" => OpenCodeHarness.reasoning_options(model, effort),
+        "variants" => { effort => OpenCodeHarness.reasoning_options(model, effort) } } }
+    @evidence["resolved_model"]["api"] = { "npm" => "@ai-sdk/anthropic" } if model == "opencode-go/claude-haiku-5-5"
     if OpenCodeHarness.output_token_policy(model)
       @evidence["resolved_model"]["limit"] = { "context" => 1_000_000, "output" => OpenCodeHarness::GO_OUTPUT_TOKEN_LIMITS.fetch(model) }
     end

@@ -167,8 +167,7 @@ class OpenCodeObservationRunner
     models = providers.first.fetch("models")
     raise "Additional or missing models" unless models.keys == [model_id]
     model = models.fetch(model_id)
-    raise "Requested reasoning is unavailable" unless model.dig("variants", effort, "reasoningEffort") == effort
-    raise "Requested reasoning default differs" unless model.dig("options", "reasoningEffort") == effort
+    OpenCodeHarness.verify_reasoning!(model, model: @spec.fetch("model"), effort: effort)
     raise "Unexpected MCP servers" unless get("/mcp").empty?
     raise "Session isolation failed" unless get("/session").empty?
     evidence.merge!("resolved_config" => actual, "resolved_model" => model, "build_agent" => agent)

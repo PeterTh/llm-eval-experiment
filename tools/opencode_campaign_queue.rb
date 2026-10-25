@@ -9,6 +9,7 @@ require_relative "generation_campaign"
 # original-source commit and cleanup. No evaluation overlaps the next campaign.
 class OpenCodeCampaignQueue
   PROFILES = %w[deepseek-v4.1-flash-oc-high minimax-m3.1-flash-oc-medium].freeze
+  PROFILE_PAIRS = [PROFILES, %w[claude-haiku-5.5-oc-medium beam-1.0-oc-medium].freeze].freeze
 
   def initialize(root)
     @root = File.realpath(root)
@@ -17,11 +18,15 @@ class OpenCodeCampaignQueue
       path = File.realpath(path)
       [path, JSON.parse(File.read(File.join(path, "campaign.json")))]
     end
-    raise "Queue scope differs" unless @campaigns.map { |_, manifest| manifest.fetch("models").keys }.flatten == PROFILES && @campaigns.size == 2
+    order = @campaigns.map { |_, manifest| manifest.fetch("models").keys }.flatten
+    raise "Queue scope differs" unless PROFILE_PAIRS.include?(order) && @campaigns.size == 2
     raise "Queue method revisions differ" unless @campaigns.map { |_, manifest| manifest.fetch("source_commit") }.uniq.size == 1
     @campaigns.each do |_, manifest|
       raise "Not an approved Go campaign" unless manifest["harness"] == "opencode" && manifest["opencode_access"] == "opencode-go" && manifest["go_balance_fallback_disabled"] == true
       raise "Production scope differs" unless manifest["expected_runs"] == 220 && manifest["per_run_timeout_seconds"] == 14400
+      manifest.fetch("models").each do |name, settings|
+        raise "Queue model or effort differs" unless settings == OpenCodeHarness.campaign_profile(name).slice("model", "reasoning_effort")
+      end
     end
   end
 
@@ -36,8 +41,10 @@ class OpenCodeCampaignQueue
     lock = File.open(File.join(@root, "queue.lock"), "a")
     locked = lock.flock(File::LOCK_EX | File::LOCK_NB)
     raise "Queue already running" unless locked
-    # DeepSeek first; a quota boundary yields to the temporary free offer.
-    # Resume any remaining DeepSeek observations after MiniMax, waiting for
+    host_lock = File.open("/tmp/local-evaluation-#{Process.uid}-performance.lock", "a")
+    raise "Another native workload owns the host" unless host_lock.flock(File::LOCK_EX | File::LOCK_NB)
+    # Paid-quota campaign first; a boundary yields to the approved free offer.
+    # Resume any remaining paid observations after the free campaign, waiting for
     # quota only once there is no free generation left to do.
     [*@campaigns, @campaigns.first].each do |path, manifest|
       raise "Queue operator stop requested" if File.exist?(File.join(@root, "STOP"))
@@ -51,7 +58,7 @@ class OpenCodeCampaignQueue
         raise unless quota_mode == :yield
         write("quota-handoff.json", { "paused_campaign" => path, "next_campaign" => @campaigns.last.first,
           "checked_at" => Time.now.utc.iso8601, "quota" => e.report })
-        puts "DeepSeek quota boundary: preserving completed observations and switching to free MiniMax."
+        puts "#{manifest.fetch('label')}: preserving completed observations at the quota boundary and switching to #{@campaigns.last.last.fetch('label')}."
       end
     end
     write("progress.json", { "status" => "complete", "checked_at" => Time.now.utc.iso8601,
@@ -60,6 +67,7 @@ class OpenCodeCampaignQueue
     write("progress.json", { "status" => "needs_review", "error" => "#{e.class}: #{e.message}", "checked_at" => Time.now.utc.iso8601 }) if locked
     raise
   ensure
+    host_lock&.close
     lock&.close
   end
 

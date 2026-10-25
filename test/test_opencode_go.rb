@@ -11,7 +11,7 @@ class OpenCodeGoTest < Minitest::Test
     @auth = File.join(@tmp, "auth.json")
     File.write(@auth, JSON.generate({ "opencode-go" => { "type" => "api", "key" => "fixture-only" } }), perm: 0600)
     @usage = %w[rolling weekly monthly].to_h { |name| [name, { "status" => "ok", "percent" => 0, "resetsAt" => "2026-10-20T00:00:00Z" }] }
-    @models = %w[deepseek-v4.1-flash minimax-m3.1-flash-free].map { |id| { "id" => id } }
+    @models = %w[deepseek-v4.1-flash minimax-m3.1-flash-free claude-haiku-5-5 beam-free].map { |id| { "id" => id } }
     @requester = ->(path) { path.end_with?("/usage") ? { "usage" => @usage } : { "data" => @models } }
   end
 
@@ -54,6 +54,14 @@ class OpenCodeGoTest < Minitest::Test
   def test_missing_free_offer_never_falls_back_to_a_paid_model
     @models = [{ "id" => "minimax-m3.1-flash" }]
     assert_raises(OpenCodeGo::Invalid) { check("opencode-go/minimax-m3.1-flash-free") }
+  end
+
+  def test_haiku_obeys_quota_while_beam_is_free_only
+    @usage["weekly"]["percent"] = 95
+    refute check("opencode-go/claude-haiku-5-5").fetch("allowed")
+    assert check("opencode-go/beam-free").fetch("allowed")
+    @models.reject! { |m| m["id"] == "beam-free" }
+    assert_raises(OpenCodeGo::Invalid) { check("opencode-go/beam-free") }
   end
 
   def test_bad_or_incomplete_usage_fails_closed
@@ -119,11 +127,12 @@ class OpenCodeGoTest < Minitest::Test
     end
   end
 
-  def make_queue
-    paths = OpenCodeCampaignQueue::PROFILES.map.with_index do |profile, index|
+  def make_queue(profiles = OpenCodeCampaignQueue::PROFILES)
+    paths = profiles.map.with_index do |profile, index|
       path = File.join(@tmp, "campaign-#{index}")
       FileUtils.mkdir_p(path)
-      manifest = { "models" => { profile => {} }, "source_commit" => "same-frozen-commit", "harness" => "opencode",
+      approved = OpenCodeHarness.campaign_profile(profile)
+      manifest = { "models" => { profile => approved.slice("model", "reasoning_effort") }, "label" => approved.fetch("label"), "source_commit" => "same-frozen-commit", "harness" => "opencode",
         "opencode_access" => "opencode-go", "go_balance_fallback_disabled" => true,
         "expected_runs" => 220, "per_run_timeout_seconds" => 14400, "campaign_id" => "batch-#{index}" }
       File.write(File.join(path, "campaign.json"), JSON.generate(manifest))
@@ -165,5 +174,35 @@ class OpenCodeGoTest < Minitest::Test
     File.write(File.join(@tmp, "STOP"), "operator pause")
     assert_raises(RuntimeError) { queue.run }
     assert_empty queue.launched
+  end
+
+  def test_queue_does_not_overlap_native_evaluation
+    queue = make_queue
+    lock = File.open("/tmp/local-evaluation-#{Process.uid}-performance.lock", "a")
+    assert lock.flock(File::LOCK_EX | File::LOCK_NB)
+    assert_raises(RuntimeError) { queue.run }
+    assert_empty queue.launched
+  ensure
+    lock&.close
+  end
+
+  def test_haiku_beam_queue_switches_and_reuses_completed_campaigns
+    order = %w[claude-haiku-5.5-oc-medium beam-1.0-oc-medium]
+    queue = make_queue(order)
+    queue.pause_first = true
+    queue.run
+    assert_equal [*order, order.first], queue.launched
+    queue.run
+    assert_equal 3, queue.launched.size
+  end
+
+  def test_queue_rejects_unapproved_pairs_and_substitution
+    assert_raises(RuntimeError) { make_queue(%w[claude-haiku-5.5-oc-medium minimax-m3.1-flash-oc-medium]) }
+    make_queue(%w[claude-haiku-5.5-oc-medium beam-1.0-oc-medium])
+    path = File.join(@tmp, "campaign-1/campaign.json")
+    manifest = JSON.parse(File.read(path))
+    manifest["models"].values.first["model"] = "opencode-go/beam-paid"
+    File.write(path, JSON.generate(manifest))
+    assert_raises(RuntimeError) { OpenCodeCampaignQueue.new(@tmp) }
   end
 end

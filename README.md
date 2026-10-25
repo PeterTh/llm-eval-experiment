@@ -168,12 +168,20 @@ campaign manifest.
 
 OpenCode Go uses a separate, private subscription credential and requires operator
 confirmation that **Use balance is off**, with no paid-credit fallback. Its profiles
-are `deepseek-v4.1-flash-oc-high` (the middle supported effort; no medium is exposed)
-and `minimax-m3.1-flash-oc-medium` (the free alias only). Prepare either with
-`--profile=PROFILE --go-balance-fallback-disabled`. The MiniMax catalog entry is
-frozen in `lib/opencode_models/`; the stock executable, prompts and adapters are
+are `deepseek-v4.1-flash-oc-high` (the middle supported effort; no medium is exposed),
+`minimax-m3.1-flash-oc-medium` (the free alias only),
+`claude-haiku-5.5-oc-medium`, and `beam-1.0-oc-medium` (the free alias only). Prepare one with
+`--profile=PROFILE --go-balance-fallback-disabled`. MiniMax and Beam catalog entries
+are frozen in `lib/opencode_models/`; the stock executable, prompts and adapters are
 unchanged. Go's native edit/write tools serve the same local editing capability as
 the OpenAI adapter's apply-patch tool.
+
+Haiku uses the stock Anthropic adapter's adaptive-thinking `effort` option;
+the other Go profiles use their stock OpenAI-compatible `reasoningEffort` option.
+The requested and resolved settings are checked before inference and again in
+the retained observation. Haiku's native comparison is batch `20261012-111947`,
+profile `claude-haiku-5.5-cc-medium`. The provider route changes along with the
+harness, so this is not an isolated causal estimate of the harness alone.
 
 Go requests use each model's advertised per-response output allowance (including
 reasoning), set through the stock `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` option.
@@ -186,16 +194,25 @@ separately. Exhausting the advertised allowance is a retained generation outcome
 not grounds for an automatic retry.
 
 `tools/opencode_campaign_queue.rb run QUEUE_ROOT` accepts a `queue.json` listing
-those two prepared campaign paths in `campaigns`, DeepSeek first, plus a passing
+an approved pair of prepared campaign paths in `campaigns`: DeepSeek then MiniMax,
+or Haiku then Beam, plus a passing
 `regression-tests.log` in each campaign. It checks the four reusable pilots before
 continuing each campaign. Read-only Go admission checks run between observations,
 outside task timing: paid generation pauses at 95% of any quota window. The queue
-switches to free MiniMax at that boundary, then resumes unfinished DeepSeek work.
+switches to the selected free campaign at that boundary, then resumes unfinished
+subscription-quota work. Completed observations and production pilots are reused.
 The free alias must still be available; no paid replacement is selected. A `STOP`
 file in the queue or campaign prevents the next observation without interrupting
 an active one. `status` records progress and optional `generation_unit` health;
 a monitor timer records status but does not itself notify an assistant. Generation
 is serial, and validation/benchmarking follow both campaigns.
+
+`tools/launch_opencode_queue.rb PAID_CAMPAIGN FREE_CAMPAIGN SETUP_DIRECTORY`
+records and launches an approved pair after checking its frozen method, passing
+regressions, no-inference isolation/hardware checks and suspended Fable state.
+The setup directory contains `setup-check.json` and `regression-tests.log`.
+The queue holds the shared native-performance lock for its lifetime. The launched
+four-hour timer records progress; it does not notify an assistant by itself.
 
 The stock `serve` and `run --attach` commands use a fresh authenticated loopback
 server for each observation. A read-only subscriber retains native retry-status

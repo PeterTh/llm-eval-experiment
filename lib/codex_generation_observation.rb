@@ -35,6 +35,7 @@ module CodexGenerationObservation
       "sha256" => paths.transform_values { |path| Digest::SHA256.file(path).hexdigest } }
     isolation_path = File.join(directory, "codex-filesystem.txt")
     if File.file?(isolation_path)
+      raise Invalid, "Codex tool execution unavailable" if head.include?("Code Mode is unavailable") || head.include?("failed to spawn code-mode host")
       isolation = JSON.parse(File.read(isolation_path))
       workspace = isolation.fetch("filesystem_isolation").fetch("workspace")
       unless workspace == cwd && workspace == "/home/llmtest/evals/#{batch}/#{id}"
@@ -45,6 +46,7 @@ module CodexGenerationObservation
       rescue RuntimeError => e
         raise Invalid, e.message
       end
+      raise Invalid, "Codex tool host was not isolated and pinned" unless isolation.dig("filesystem_isolation", "harness_companions")&.keys == ["codex-code-mode-host"]
       unless isolation.values_at("model", "effort", "version", "timeout_seconds", "exit_status", "term_signal") ==
           [model, effort, version, timeout_seconds, process["exit_status"], process["term_signal"]]
         raise Invalid, "Isolated CLI identity/status differs"

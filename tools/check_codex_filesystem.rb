@@ -65,6 +65,7 @@ begin
   puts JSON.generate({ "checked_at" => Time.now.utc.iso8601, "inferences_launched" => 0,
     "filesystem_isolation" => evidence.fetch("filesystem_isolation"), "version" => evidence.fetch("version"),
     "binary_sha256" => evidence.fetch("binary_sha256"), "hybrid_probe" => hybrid, "cuda_probe" => cuda,
+    "tool_host_startup" => "passed: pinned companion --help inside isolated namespace",
     "visibility_and_dns" => visibility, "private_state_removed" => true, "lifecycle_exit_status" => 0 })
 ensure
   # Only the two fresh mktemp-derived probe directories, never an existing run.

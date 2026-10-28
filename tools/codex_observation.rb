@@ -26,7 +26,8 @@ class CodexObservationRunner
   end
 
   def filesystem
-    @filesystem ||= GenerationFilesystem.new(workspace: @workspace, state: @state, binary: @binary)
+    @filesystem ||= GenerationFilesystem.new(workspace: @workspace, state: @state, binary: @binary,
+      companions: { "codex-code-mode-host" => File.join(File.dirname(@binary), "codex-code-mode-host") })
   end
 
   def write(path, value, perm: 0600)
@@ -88,6 +89,9 @@ class CodexObservationRunner
     raise "Isolated Codex version check failed: #{err}" unless status.success?
     version = out.strip[/\Acodex-cli (\d+\.\d+\.\d+)\z/, 1]
     raise "Unexpected Codex version output" unless version
+    help, error, companion_status = Open3.capture3(@env, *filesystem.prefix,
+      File.join(File.dirname(GenerationFilesystem::BINARY), "codex-code-mode-host"), "--help")
+    raise "Isolated Codex tool host failed to start: #{error}" unless companion_status.success? && help.start_with?("Usage: codex-code-mode-host")
     write(File.join(@state, "prepared.json"), {
       "version" => version, "binary_sha256" => Digest::SHA256.file(@binary).hexdigest,
       "filesystem_isolation" => filesystem.evidence.merge("preflight" => probe),

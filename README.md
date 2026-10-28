@@ -127,7 +127,9 @@ keeps the established model, effort and disabled web-search settings without pri
 project history. Fresh session rollouts are archived after the observation exits,
 then bound by hash to the deferred exact-token recovery; previous sessions remain
 inaccessible to the agent. Subscription credential refresh and session collection
-are outside task time. `tools/check_codex_filesystem.rb PINNED_EXECUTABLE` checks
+are outside task time. The pinned CLI and its companion `codex-code-mode-host`
+are mounted individually read-only; both are fingerprinted, and startup of both
+is checked before inference. `tools/check_codex_filesystem.rb PINNED_EXECUTABLE` checks
 the same CLI, visibility, MPI/OpenMP, CUDA and cleanup properties without inference.
 The Terra 6.1 profile is `gpt-6.1-terra-medium`, explicitly selecting
 `gpt-6.1-terra` with `medium` effort and the unchanged production task budget.

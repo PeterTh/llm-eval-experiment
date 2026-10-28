@@ -91,6 +91,8 @@ class CodexGenerationObservationTest < Minitest::Test
   def isolation
     { "filesystem_isolation" => GenerationFilesystem.policy_details(@header.fetch("workdir")).merge(
         "implementation_sha256" => "a" * 64, "bubblewrap_sha256" => "b" * 64,
+        "harness_companions" => { "codex-code-mode-host" => {
+          "mount" => "/run/llm-eval/bin/codex-code-mode-host", "sha256" => "d" * 64 } },
         "preflight" => { "passed" => true, "operator_home_visible" => false, "other_observations_visible" => false }),
       "model" => "gpt-6.1-sol", "effort" => "medium", "version" => @version,
       "timeout_seconds" => 14400, "exit_status" => 0, "term_signal" => nil,
@@ -121,5 +123,19 @@ class CodexGenerationObservationTest < Minitest::Test
       File.write(path, JSON.generate(evidence))
       assert_raises(CodexGenerationObservation::Invalid) { read }
     end
+  end
+
+  def test_unavailable_tool_host_is_an_infrastructure_failure
+    File.write(File.join(@directory, "codex-filesystem.txt"), JSON.generate(isolation))
+    @terminal = "warning: Code Mode is unavailable because failed to spawn code-mode host\n" + @terminal
+    error = assert_raises(CodexGenerationObservation::Invalid) { read }
+    assert_includes error.message, "tool execution unavailable"
+  end
+
+  def test_missing_companion_pin_is_rejected
+    evidence = isolation
+    evidence.fetch("filesystem_isolation").delete("harness_companions")
+    File.write(File.join(@directory, "codex-filesystem.txt"), JSON.generate(evidence))
+    assert_raises(CodexGenerationObservation::Invalid) { read }
   end
 end

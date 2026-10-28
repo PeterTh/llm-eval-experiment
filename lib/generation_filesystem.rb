@@ -12,8 +12,9 @@ class GenerationFilesystem
   HOME_PATH = "/home/llmtest"
   SYSTEM = %w[/usr /etc /opt /sys].freeze
 
-  def initialize(workspace:, state:, binary:)
+  def initialize(workspace:, state:, binary:, companions: {})
     @workspace, @state, @binary = workspace, state, binary
+    @companions = self.class.validate_companions!(binary, companions)
     raise "Unsafe observation workspace" unless workspace.match?(%r{\A/home/llmtest/evals/[^/]+/[^/]+\z})
     raise "Unsafe observation state" unless state.match?(%r{\A/tmp/(?:opencode|claude|codex)-observation-[^/]+/private\z})
     [workspace, state, binary].each do |path|
@@ -44,6 +45,9 @@ class GenerationFilesystem
       "--bind", File.join(@state, "var-tmp"), "/var/tmp",
       "--bind", @state, STATE, "--bind", @workspace, @workspace,
       "--ro-bind", @binary, BINARY])
+    (@companions || {}).each do |name, path|
+      args.concat(["--ro-bind", path, File.join(File.dirname(BINARY), name)])
+    end
     # /etc/resolv.conf is a symlink on this host. Do not expose the rest of /run.
     resolver = "/run/systemd/resolve"
     args.concat(["--ro-bind", resolver, resolver]) if File.directory?(resolver)
@@ -65,16 +69,40 @@ class GenerationFilesystem
   def self.verify_evidence!(value, workspace:)
     hashes = %w[implementation_sha256 bubblewrap_sha256]
     raise "Invalid filesystem implementation fingerprints" unless hashes.all? { |key| value[key].is_a?(String) && value[key].match?(/\A[0-9a-f]{64}\z/) }
-    raise "Filesystem isolation policy differs" unless value.reject { |key, _| (hashes + ["preflight"]).include?(key) } == policy_details(workspace)
+    if value.key?("harness_companions")
+      companions = value.fetch("harness_companions")
+      raise "Unexpected harness companion" unless companions.is_a?(Hash) && companions.keys == ["codex-code-mode-host"]
+      companion = companions.fetch("codex-code-mode-host")
+      raise "Invalid companion fingerprint or mount" unless companion.is_a?(Hash) && companion.keys.sort == %w[mount sha256] &&
+        companion["mount"] == File.join(File.dirname(BINARY), "codex-code-mode-host") && companion["sha256"].to_s.match?(/\A[0-9a-f]{64}\z/)
+    end
+    raise "Filesystem isolation policy differs" unless value.reject { |key, _| (hashes + ["preflight", "harness_companions"]).include?(key) } == policy_details(workspace)
     raise "Filesystem isolation preflight failed" unless value["preflight"] == {
       "passed" => true, "operator_home_visible" => false, "other_observations_visible" => false }
     value
   end
 
   def evidence
-    self.class.policy_details(@workspace).merge(
+    result = self.class.policy_details(@workspace).merge(
       "implementation_sha256" => Digest::SHA256.file(__FILE__).hexdigest,
       "bubblewrap_sha256" => Digest::SHA256.file("/usr/bin/bwrap").hexdigest)
+    unless (@companions || {}).empty?
+      result["harness_companions"] = @companions.to_h do |name, path|
+        [name, { "mount" => File.join(File.dirname(BINARY), name), "sha256" => Digest::SHA256.file(path).hexdigest }]
+      end
+    end
+    result
+  end
+
+  def self.validate_companions!(binary, companions)
+    raise "Invalid harness companions" unless companions.is_a?(Hash)
+    return companions if companions.empty?
+    raise "Unexpected harness companion" unless companions.keys == ["codex-code-mode-host"] && File.basename(binary) == "codex"
+    companions.each do |name, path|
+      raise "Companion must be a canonical executable beside the pinned CLI" unless
+        path == File.join(File.dirname(binary), name) && File.file?(path) && File.executable?(path) && File.realpath(path) == path
+    end
+    companions
   end
 
   def verify!

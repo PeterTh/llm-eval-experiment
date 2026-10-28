@@ -111,7 +111,7 @@ and its token/API counters remain cumulative. The final cumulative totals are
 counted once. Changed identities/capabilities or unexplained reinitialization
 still stop the campaign; original transcripts are never rewritten.
 
-New Claude Code and OpenCode observations run inside a mount allowlist: only
+New Claude Code, Codex and OpenCode observations run inside a mount allowlist: only
 the current workspace, fresh private home/scratch, read-only system tools and
 the pinned harness executable are visible. CPU/GPU and network access remain
 unchanged. The trusted outer driver verifies isolation before inference; there
@@ -121,6 +121,16 @@ preserves refreshed subscription credentials outside the published outputs.
 `tools/check_claude_filesystem.rb PINNED_EXECUTABLE` checks CLI startup, visibility,
 MPI/OpenMP, CUDA and cleanup as `llmtest`, without a model request. A frozen
 campaign needs an explicit recorded launcher amendment before using this policy.
+
+Codex retains an analogous `codex-filesystem.txt` receipt. Its private configuration
+keeps the established model, effort and disabled web-search settings without prior
+project history. Fresh session rollouts are archived after the observation exits,
+then bound by hash to the deferred exact-token recovery; previous sessions remain
+inaccessible to the agent. Subscription credential refresh and session collection
+are outside task time. `tools/check_codex_filesystem.rb PINNED_EXECUTABLE` checks
+the same CLI, visibility, MPI/OpenMP, CUDA and cleanup properties without inference.
+The Terra 6.1 profile is `gpt-6.1-terra-medium`, explicitly selecting
+`gpt-6.1-terra` with `medium` effort and the unchanged production task budget.
 
 After each harness invocation, the supervisor verifies that the reserved evaluation
 account has no processes left. Any survivors are sent SIGKILL as that account,
@@ -205,7 +215,8 @@ The free alias must still be available; no paid replacement is selected. A `STOP
 file in the queue or campaign prevents the next observation without interrupting
 an active one. `status` records progress and optional `generation_unit` health;
 a monitor timer records status but does not itself notify an assistant. Generation
-is serial, and validation/benchmarking follow both campaigns.
+is serial. Queue order covers generation only; an operator-requested full
+evaluation and publication takes precedence over starting the next campaign.
 
 `tools/launch_opencode_queue.rb PAID_CAMPAIGN FREE_CAMPAIGN SETUP_DIRECTORY`
 records and launches an approved pair after checking its frozen method, passing

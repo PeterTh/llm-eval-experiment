@@ -207,6 +207,11 @@ class GenerationCampaign
       raise "Recovered CLI version differs" unless record.fetch("cli_version") == @manifest.fetch("codex_version")
       CodexUsage.verify_transcript!(record, id: record.fetch("run_id"), batch: @batch,
         path: File.join(@results, record.fetch("run_id"), "output.txt"))
+      report = completed.find { |item| item.fetch("id") == record.fetch("run_id") }
+      if report["archived_sessions"]
+        archived = report.fetch("archived_sessions").find { |item| item.fetch("path") == record.fetch("session_path") }
+        raise "Recovered session differs from isolated archive" unless archived && archived.fetch("sha256") == record.fetch("session_sha256")
+      end
     end
     content = records.map { |r| JSON.generate(r) + "\n" }.join
     output = File.join(@root, "#{prefix}codex-usage.jsonl")
@@ -304,6 +309,7 @@ class GenerationCampaign
     raise "Gitlink or symlink in staged source" unless entries.all? { |line| line.start_with?("100644 ", "100755 ") }
     @ids.each do |id|
       required = %w[output.txt timing.txt instruction.txt process-status.txt]
+      required << "codex-filesystem.txt" if @harness == "codex" && @manifest["generation_filesystem_policy"]
       required << "usage.txt" if @harness == "claude"
       if @harness == "opencode"
         required.concat(OpenCodeHarness::EVIDENCE_FILES)

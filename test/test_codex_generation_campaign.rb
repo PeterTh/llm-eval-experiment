@@ -145,4 +145,35 @@ class CodexGenerationCampaignTest < Minitest::Test
     assert_equal @ids.sort, Dir.children(@results).sort
     assert_equal "needs_review", JSON.parse(File.read(File.join(@root, "progress.json"))).fetch("status")
   end
+
+  def test_declared_isolation_is_required_before_preflight_acceptance
+    @manifest["generation_filesystem_policy"] = GenerationFilesystem::POLICY
+    write_manifest
+    @campaign = SimulatedCampaign.new(@root)
+    @campaign.produce = method(:record)
+    capture_io do
+      error = assert_raises(RuntimeError) { @campaign.preflight }
+      assert_includes error.message, "required filesystem isolation"
+    end
+    assert_equal [@ids.first], @campaign.launched
+    assert_empty @campaign.recoveries
+    refute File.exist?(File.join(@root, "preflight-gate.json"))
+  end
+
+  def test_recovered_session_must_match_post_observation_archive_digest
+    @ids.take(2).each { |id| record(id) }
+    reports = @ids.take(2).map { |id| @campaign.observation(id) }
+    reports.each do |report|
+      file = Dir[File.join(@sessions, "*-#{report.fetch('session_id')}.jsonl")].fetch(0)
+      report["archived_sessions"] = [{ "path" => File.basename(file), "sha256" => Digest::SHA256.file(file).hexdigest }]
+    end
+    capture_io { @campaign.recover_usage!(reports, prefix: "bound-") }
+    assert File.file?(File.join(@root, "bound-codex-usage.jsonl"))
+    reports.first.fetch("archived_sessions").first["sha256"] = "a" * 64
+    capture_io do
+      error = assert_raises(RuntimeError) { @campaign.recover_usage!(reports, prefix: "wrong-") }
+      assert_includes error.message, "differs from isolated archive"
+    end
+    refute File.exist?(File.join(@root, "wrong-codex-usage.jsonl"))
+  end
 end

@@ -87,4 +87,39 @@ class CodexGenerationObservationTest < Minitest::Test
     baseline = read.merge("reasoning_effort" => "xhigh")
     assert_raises(CodexGenerationObservation::Invalid) { read(baseline: baseline) }
   end
+
+  def isolation
+    { "filesystem_isolation" => GenerationFilesystem.policy_details(@header.fetch("workdir")).merge(
+        "implementation_sha256" => "a" * 64, "bubblewrap_sha256" => "b" * 64,
+        "preflight" => { "passed" => true, "operator_home_visible" => false, "other_observations_visible" => false }),
+      "model" => "gpt-6.1-sol", "effort" => "medium", "version" => @version,
+      "timeout_seconds" => 14400, "exit_status" => 0, "term_signal" => nil,
+      "session_archive_complete" => true, "archived_sessions" => [{
+        "path" => "2026/10/06/rollout-2026-10-06T12-00-00-#{@header.fetch('session id')}.jsonl",
+        "sha256" => "c" * 64, "bytes" => 1234 }] }
+  end
+
+  def test_new_isolated_observation_requires_bound_evidence_and_archived_session
+    path = File.join(@directory, "codex-filesystem.txt")
+    File.write(path, JSON.generate(isolation))
+    report = read
+    assert_equal GenerationFilesystem::POLICY, report.dig("filesystem_isolation", "policy")
+    assert_equal 5, report.fetch("sha256").size
+    assert_equal isolation.fetch("archived_sessions"), report.fetch("archived_sessions")
+    [{ "effort" => "low" }, { "session_archive_complete" => false }, { "archived_sessions" => [] },
+      { "exit_status" => 1 }, { "model" => "different" }].each do |mutation|
+      File.write(path, JSON.generate(isolation.merge(mutation)))
+      assert_raises(CodexGenerationObservation::Invalid) { read }
+    end
+  end
+
+  def test_isolation_policy_and_workspace_drift_fail
+    path = File.join(@directory, "codex-filesystem.txt")
+    %w[workspace private_proc private_home].each do |key|
+      evidence = isolation
+      evidence.fetch("filesystem_isolation")[key] = "wrong"
+      File.write(path, JSON.generate(evidence))
+      assert_raises(CodexGenerationObservation::Invalid) { read }
+    end
+  end
 end

@@ -2,6 +2,7 @@ require "json"
 require "time"
 require "shellwords"
 require "tmpdir"
+require "open3"
 
 require_relative "general"
 require_relative "lib/experiment_selection"
@@ -58,6 +59,7 @@ MODELS = {"claude-sonnet-4.5":1,
           "gpt-6-astra-medium":0,
           "gpt-6.1-sol-medium":0,
           "gpt-6.1-sol-xhigh":0,
+          "gpt-6.1-terra-medium":0,
           "gpt-6.1-sol-oc-medium":0,
           "gpt-6-luna-oc-medium":0,
           "claude-fable-5-cc-medium":0,
@@ -87,6 +89,7 @@ MODEL_MAPPING = {
     "gpt-6-astra-medium" => "gpt-6-astra",
     "gpt-6.1-sol-medium" => "gpt-6.1-sol",
     "gpt-6.1-sol-xhigh" => "gpt-6.1-sol",
+    "gpt-6.1-terra-medium" => "gpt-6.1-terra",
     "gpt-6.1-sol-oc-medium" => "openai/gpt-6.1-sol",
     "gpt-6-luna-oc-medium" => "openai/gpt-6-luna",
     "claude-fable-5-cc-medium" => "claude-fable-5",
@@ -113,6 +116,7 @@ REASONING_MAPPING = {
     "gpt-6-astra-medium" => "medium",
     "gpt-6.1-sol-medium" => "medium",
     "gpt-6.1-sol-xhigh" => "xhigh",
+    "gpt-6.1-terra-medium" => "medium",
     "gpt-6.1-sol-oc-medium" => "medium",
     "gpt-6-luna-oc-medium" => "medium",
     "claude-fable-5-cc-medium" => "medium",
@@ -588,7 +592,29 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
             command = "#{command_prefix} pi -p \"#{instruction}\" > output.txt 2>&1"
         elsif HARNESS == :codex
             reasoning_effort = REASONING_MAPPING[model] || "xhigh"
-            command = "#{command_prefix} \"#{CODEX_BINARY}\" --model #{actual_model_id} -c model_reasoning_effort=\"#{reasoning_effort}\" #{PARAMS_CODEX} exec \"#{instruction}\" > output.txt 2>&1"
+            state_parent = Dir.mktmpdir("codex-observation-", "/tmp")
+            FileUtils.chmod(01777, state_parent)
+            spec_path = File.join(state_parent, "spec.json")
+            binary = CODEX_BINARY
+            unless binary.start_with?("/")
+                resolved, status = Open3.capture2("su", "-", EVAL_USER, "--shell=/bin/bash", "-c",
+                    "command -v #{Shellwords.escape(binary)}")
+                raise "Codex executable not found for evaluation user" unless status.success?
+                binary = resolved.strip
+            end
+            spec = { "id" => id, "binary" => File.realpath(binary),
+                "state" => File.join(state_parent, "private"), "workspace" => bench_path,
+                "model" => actual_model_id, "effort" => reasoning_effort,
+                "instruction" => instruction, "timeout_seconds" => MAX_TIME_SECONDS,
+                "flags" => Shellwords.split(PARAMS_CODEX), "environment" => {} }
+            File.write(spec_path, JSON.pretty_generate(spec) + "\n")
+            runner = File.expand_path("tools/codex_observation.rb", __dir__)
+            preparation_started = Time.now
+            preparation = Shellwords.join(["ruby", runner, "prepare", spec_path])
+            raise "Codex isolation preparation failed" unless system("su", "-", EVAL_USER, "--shell=/bin/bash", "-c", preparation)
+            start_time += Time.now - preparation_started
+            command = Shellwords.join(["ruby", runner, "run", spec_path]) +
+                " > #{Shellwords.escape(File.join(bench_path, 'output.txt'))} 2>&1"
         elsif HARNESS == :claude
             state_parent = Dir.mktmpdir("claude-observation-", "/tmp")
             FileUtils.chmod(01777, state_parent)
@@ -637,6 +663,15 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
     end
 
     end_time = Time.now
+    codex_process = nil
+    codex_collection_ok = true
+    if HARNESS == :codex
+        evidence_path = File.join(bench_path, "codex-filesystem.txt")
+        raise "Codex isolation evidence missing; workspace retained" unless File.file?(evidence_path)
+        codex_process = JSON.parse(File.read(evidence_path))
+        end_time = Time.iso8601(codex_process.fetch("generation_finished_at"))
+        codex_collection_ok = agent_status&.exitstatus == codex_process["exit_status"] && codex_process["session_archive_complete"] == true
+    end
     claude_collection_ok = true
     if HARNESS == :claude
         evidence_path = File.join(bench_path, "claude-filesystem.txt")
@@ -654,9 +689,10 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
         opencode_collection_ok = agent_status&.exitstatus == opencode_process["exit_status"]
     end
     duration = end_time - start_time
+    native_process = opencode_process || codex_process
     File.write(File.join(bench_path, "process-status.txt"), JSON.pretty_generate({
-        "exit_status" => opencode_process ? opencode_process["exit_status"] : agent_status&.exitstatus,
-        "term_signal" => opencode_process ? opencode_process["term_signal"] : agent_status&.termsig,
+        "exit_status" => native_process ? native_process["exit_status"] : agent_status&.exitstatus,
+        "term_signal" => native_process ? native_process["term_signal"] : agent_status&.termsig,
         "success" => agent_status&.success?, "timeout_seconds" => MAX_TIME_SECONDS
     }) + "\n")
 
@@ -714,7 +750,7 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
     # move everything to the target directory, so that subsequent agent runs cannot access the results
     FileUtils.mkdir_p(EVAL_TARGET_DIR)
     FileUtils.mv(bench_path, EVAL_TARGET_DIR)
-    if %i[claude opencode].include?(HARNESS) && state_parent && !File.exist?(File.join(state_parent, "private"))
+    if %i[claude codex opencode].include?(HARNESS) && state_parent && !File.exist?(File.join(state_parent, "private"))
         FileUtils.remove_entry(state_parent)
     end
 
@@ -728,6 +764,7 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
     # model invocation when the completed observation's evidence is recoverable.
     raise "OpenCode evidence collection failed; native result retained" unless opencode_collection_ok
     raise "Claude evidence collection failed; native result retained" unless claude_collection_ok
+    raise "Codex evidence collection failed; native result retained" unless codex_collection_ok
 
     $times << duration
     avg_time = $times.sum / $times.size

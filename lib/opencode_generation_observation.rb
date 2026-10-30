@@ -36,17 +36,18 @@ module OpenCodeGenerationObservation
     duration = ExperimentSelection.completed_duration(directory)
     raise Invalid, "Observation has no completion record" unless duration
     termination = OpenCodeGenerationTermination.read(directory)
+    interrupted = termination && !termination.fetch("native_process_receipt_available")
     paths = (%w[output.txt timing.txt instruction.txt process-status.txt] + OpenCodeHarness::EVIDENCE_FILES)
       .to_h { |name| [name, File.join(directory, name)] }
     if termination
-      paths.delete("opencode-process.txt")
+      paths.delete("opencode-process.txt") if interrupted
       paths[OpenCodeGenerationTermination::FILENAME] = File.join(directory, OpenCodeGenerationTermination::FILENAME)
     end
     paths.each { |name, path| raise Invalid, "Missing #{name}" unless File.file?(path) && !File.zero?(path) }
     evidence, session, process = %w[opencode-config.txt opencode-session.txt process-status.txt].map { |name| JSON.parse(File.read(paths.fetch(name))) }
-    native_process = JSON.parse(File.read(paths.fetch("opencode-process.txt"))) unless termination
+    native_process = JSON.parse(File.read(paths.fetch("opencode-process.txt"))) unless interrupted
     raise Invalid, "Generation budget differs" unless [process, native_process].compact.all? { |record| record["timeout_seconds"] == timeout_seconds }
-    unless termination
+    unless interrupted
       raise Invalid, "OpenCode process status differs" unless %w[exit_status term_signal].all? { |key| process[key] == native_process[key] }
     end
     raise Invalid, "OpenCode version changed" unless evidence["version"] == version && evidence["binary_sha256"] == OpenCodeHarness::BINARY_SHA256
@@ -147,7 +148,7 @@ module OpenCodeGenerationObservation
     if info["tokens"]
       raise Invalid, "Native session total disagrees with request counters" unless normalize_usage(info["tokens"]) == totals
     end
-    backoff, retries = retry_backoff(events, sid, native_process, interrupted: !termination.nil?)
+    backoff, retries = retry_backoff(events, sid, native_process, interrupted: !!interrupted)
     raise Invalid, "Retry waits exceed duration" if backoff > duration
     report = { "id" => id, "model" => model, "reasoning_effort" => effort, "version" => version,
       "session_id" => sid, "tools" => tools, "tools_called" => calls.uniq.sort,
@@ -166,7 +167,8 @@ module OpenCodeGenerationObservation
       end
     end
     if termination
-      raise Invalid, "Terminated session contains another terminal error" unless errors.empty?
+      expected_errors = interrupted ? [] : [termination.fetch("terminal_error")]
+      raise Invalid, "Terminated session contains another terminal error" unless errors == expected_errors
       return report.merge("outcome" => "generation_model_terminated", "usage_complete" => false,
         "generation_failure_reason" => termination.fetch("reason"),
         "termination_record_sha256" => termination.fetch("termination_record_sha256"))

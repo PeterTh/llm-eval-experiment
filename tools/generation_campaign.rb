@@ -313,8 +313,8 @@ class GenerationCampaign
       required << "usage.txt" if @harness == "claude"
       if @harness == "opencode"
         required.concat(OpenCodeHarness::EVIDENCE_FILES)
-        if OpenCodeGenerationTermination.read(File.join(@results, id))
-          required.delete("opencode-process.txt")
+        if (termination = OpenCodeGenerationTermination.read(File.join(@results, id)))
+          required.delete("opencode-process.txt") unless termination.fetch("native_process_receipt_available")
           required << OpenCodeGenerationTermination::FILENAME
         end
       end

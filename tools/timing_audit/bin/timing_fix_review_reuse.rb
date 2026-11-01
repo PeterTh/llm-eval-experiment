@@ -7,7 +7,7 @@ require_relative "../lib/timing_fix_review"
 module TimingFixReviewReuse
   module_function
 
-  def run(source:, destination:, model:, effort:)
+  def run(source:, destination:, model:, effort:, only_ids: nil)
     source = File.realpath(source)
     destination = File.realpath(destination)
     raise "Cannot reuse into the same review" if source == destination
@@ -22,7 +22,9 @@ module TimingFixReviewReuse
       TimingAudit.load_jsonl(File.join(root, "inventory.jsonl")).to_h { |record| [record.fetch("id"), record] }
     end
     validator = TimingFixReview::ResultValidator.new(records[1].values)
-    ids = records[0].keys.sort
+    ids = only_ids ? Array(only_ids).sort : records[0].keys.sort
+    raise "Reuse selection must be nonempty and unique" if ids.empty? || ids.uniq != ids
+    raise "Unknown source reuse IDs" unless (ids - records[0].keys).empty?
     raise "Pilot IDs missing from destination" unless (ids - records[1].keys).empty?
     index_path = File.join(destination, "reused-reviews.json")
     raise "Reuse index already exists" if File.exist?(index_path)
@@ -69,6 +71,7 @@ module TimingFixReviewReuse
       "source_manifest_sha256" => TimingAudit.sha256_file(File.join(source, "manifest.yaml")),
       "destination_manifest_sha256" => TimingAudit.sha256_file(File.join(destination, "manifest.yaml")),
       "model" => model, "effort" => effort,
+      "selected_ids" => ids, "explicit_subset" => !only_ids.nil?,
       "policy" => "Reuse only identical source/proposal, literal prompt, schema, runner and verified static response evidence",
       "records" => entries.map { |entry| { "program_id" => entry.fetch("program_id"),
         "copied_files_sha256" => entry.fetch("files").to_h { |_path, relative, sha| [relative, sha] } } }

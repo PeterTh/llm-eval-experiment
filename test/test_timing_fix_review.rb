@@ -107,6 +107,17 @@ class TimingFixReviewInventoryTest < Minitest::Test
       assert_raises(RuntimeError) do
         TimingFixReviewReuse.run(source: pilot, destination: full, model: "gpt-5.6-luna", effort: "high")
       end
+      subset = File.join(root, "subset")
+      capture_io { TimingFixReview::InventoryBuilder.new(proposal_root: proposals, output_dir: subset, scope: "trial").run }
+      assert_raises(RuntimeError) { TimingFixReviewReuse.run(source: full, destination: subset, model: "gpt-5.6-luna", effort: "high") }
+      [[], [id, id], ["unknown"]].each do |bad|
+        assert_raises(RuntimeError) { TimingFixReviewReuse.run(source: full, destination: subset, model: "gpt-5.6-luna", effort: "high", only_ids: bad) }
+      end
+      capture_io { TimingFixReviewReuse.run(source: full, destination: subset, model: "gpt-5.6-luna", effort: "high", only_ids: [id]) }
+      subset_index = JSON.parse(File.read(File.join(subset, "reused-reviews.json")))
+      assert subset_index.fetch("explicit_subset")
+      assert_equal [id], subset_index.fetch("selected_ids")
+      assert_equal bytes, File.read(File.join(subset, "results", "#{id}.json"))
     end
   end
 

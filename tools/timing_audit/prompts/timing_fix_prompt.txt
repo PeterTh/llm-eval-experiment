@@ -14,11 +14,19 @@ Final issue categories: %{issue_categories}
 
 CORRECTION CONTRACT
 
-For MPI/hybrid, the canonical reported time must become the maximum complete per-rank
+For distributed MPI/hybrid work, the canonical reported time must become the maximum complete per-rank
 elapsed time, or a demonstrably equivalent global makespan. For OpenMP/CUDA without
 MPI, measure completion of the intended computation across the process's threads and
 devices; do not introduce MPI. All relevant GPU work must be complete before the
 applicable stop. The printed value must be the corrected duration in the declared unit.
+
+If a process independently computes the entire intended result, a complete local
+duration is valid without waiting for redundant copies on other processes. Prove
+this from actual result ownership, not just replicated inputs or equal work. Do not
+introduce MPI or aggregation solely for independently completed full-result replicas.
+If that is the only alleged defect, no correction is needed; explain in cannot_fix.
+Other timing defects, such as omitted algorithmic work or unfinished GPU work, still
+require correction even for replicas.
 
 For QT-clustering, include input-dependent algorithmic preprocessing (distances,
 squared distances, neighbor/candidate tables, spatial indexes and cached clusters)

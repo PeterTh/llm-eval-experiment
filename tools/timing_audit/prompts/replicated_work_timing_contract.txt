@@ -1,0 +1,32 @@
+INDEPENDENT COMPLETE-RESULT REPLICAS
+
+The maximum-per-rank/global-makespan requirement applies when work across ranks is
+needed to produce one complete result. It does not apply merely because several
+processes are launched, MPI is initialized, or the requested backend is hybrid.
+
+If the source proves that a process independently computes the entire intended
+result, its complete local elapsed time is valid: a complete answer is available
+when that process finishes. Other processes redundantly computing the same entire
+answer need not finish first. Do not require equal replica durations, a maximum
+reduction, a minimum reduction, or an extra barrier for this case. Do not introduce
+MPI solely to aggregate the timing of otherwise independent complete replicas.
+
+Prove complete-result replication from dataflow, actual loop bounds and output
+ownership. Replicated input arrays, equal workloads, identical function calls,
+or the absence of MPI calls inside one function are not sufficient: a process
+that computes only a partition or relies on another rank's numerical work still
+requires the ordinary distributed timing contract. Do not infer replication from
+the backend label or from a comment.
+
+The local interval must still include all intended algorithmic work and completed
+thread/device work. For QT-clustering this includes distance/neighbor/candidate
+preprocessing supplying clustering, even if called setup or a constructor. Input
+generation, allocation and layout-only input copies may remain outside timing.
+Completion of an asynchronous GPU kernel must be proved before the local stop.
+Units and the canonical printed value must remain correct. Do not repair missing
+parallelism, change computation, or treat backend compliance as a timing defect.
+
+For a replica accepted under this rule, explain the complete-result proof and
+local start/stop/device-completion evidence explicitly. It is not necessary to
+claim that the local interval is a global makespan. For genuinely distributed
+work, retain the maximum complete per-rank duration or proven equivalent rule.

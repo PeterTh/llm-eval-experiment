@@ -1,4 +1,9 @@
-Before rejecting a root-local duration, explicitly trace the first useful
+Before rejecting a local duration, check whether the reporting process independently
+computes the complete intended result. A complete local interval for such a replica
+is valid without waiting for redundant copies; prove full-result dataflow and device
+completion, not merely replicated inputs or equal work. Do not add MPI for this case.
+
+For genuinely distributed work, explicitly trace the first useful
 computation on every rank through called functions and its communication
 dependencies. A barrier pair alone is insufficient, but a later dependency can
 prove that the reporting root starts its timer before any useful computation:

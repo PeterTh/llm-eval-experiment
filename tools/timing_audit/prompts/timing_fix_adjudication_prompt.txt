@@ -14,12 +14,18 @@ Canonical timing label: %{metric_label}
 
 ADJUDICATION CONTRACT
 
-For MPI/hybrid, accept only when the corrected source reports the maximum completed
+For distributed MPI/hybrid work, accept only when the corrected source reports the maximum completed
 per-rank duration or a demonstrably equivalent global makespan. For OpenMP/CUDA without
 MPI, require completed computation across the process's threads/devices, not an MPI
 collective. In every backend, enclose complete intended computation and asynchronous
 device work, use compatible collectives/datatypes/communicators where applicable,
 and change timing/reporting only.
+
+For independent complete-result replicas, a complete local duration is valid because
+the entire answer is available when that process finishes; redundant copies need not
+finish first. Prove complete-result dataflow and completed thread/device work, not
+just replicated inputs or equal partitions. No MPI aggregation is required solely
+for such replicas. The distributed-rank rules below do not override this distinction.
 
 For QT-clustering, algorithmic preprocessing used by clustering (distances, squared
 distances, neighbor/candidate tables, spatial indexes and cached clusters) belongs

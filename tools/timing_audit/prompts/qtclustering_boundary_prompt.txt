@@ -46,7 +46,12 @@ Prove asynchronous work has completed before stop via synchronization, blocking
 copies, or equivalent dependencies. CUDA-event kernel-only timing is insufficient
 if required CPU computation is excluded. Do not add MPI requirements to CUDA-only.
 
-For MPI/hybrid, require maximum complete per-rank elapsed time, or a demonstrated
+If a process independently computes the entire clustering result, its complete local
+duration is valid without waiting for redundant copies on other processes. Prove
+full result ownership and included preprocessing/device completion; replicated input
+points alone do not establish this. Do not introduce MPI solely to time replicas.
+
+For distributed MPI/hybrid work, require maximum complete per-rank elapsed time, or a demonstrated
 equivalent global makespan. A literal MPI_MAX is not mandatory. Correct MPI_MAX of
 complete local intervals does not additionally require a start barrier. However,
 barrier; local start; work; barrier; local stop; root prints its own elapsed time

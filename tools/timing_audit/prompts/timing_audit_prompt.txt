@@ -16,6 +16,16 @@ is only a functional filter; it is not evidence that the benchmark timer is vali
 
 TIMING CONTRACT
 
+First distinguish distributed work from independent complete-result replicas.
+If a process independently computes the entire intended result and times all of
+that computation through completed thread/device work, its local duration is valid:
+a complete answer is available when it finishes. Other redundant copies need not
+finish first. Do not require MPI_MAX or add MPI solely for this case. Prove full
+result ownership from actual dataflow and bounds; replicated inputs or equal-sized
+partitions are not enough. All intended work, including algorithmic preprocessing,
+must still be timed. The distributed-rank rules below apply when ranks cooperate
+to produce one complete result, not to proven independent complete-result replicas.
+
 The canonical reported time must represent the completion time of the intended timed
 computation across all MPI ranks: the maximum per-rank elapsed time, or a
 demonstrably equivalent global makespan. A literal MPI_MAX is not required when the

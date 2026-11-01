@@ -15,7 +15,7 @@ REVIEW CONTRACT
 
 Accept the correction only when the corrected source proves all of the following:
 
-1. For MPI/hybrid, the canonical reported time is the maximum completed per-rank
+1. For distributed MPI/hybrid work, the canonical reported time is the maximum completed per-rank
    duration, or a demonstrably equivalent global makespan. For OpenMP/CUDA without
    MPI, it encloses the intended computation across the process's threads/devices;
    no MPI collective is required.
@@ -29,6 +29,13 @@ Accept the correction only when the corrected source proves all of the following
    algorithm, problem, inputs, iteration count, computational result, validation,
    or any non-timing observable behavior beyond directly derived timing/performance
    output and synchronization required to establish a valid measurement.
+
+Independent complete-result replicas are different: a local duration is valid when
+it encloses all work producing the entire result, including thread/device completion.
+Other redundant copies need not finish first. Prove complete result ownership rather
+than merely replicated inputs or equal partitions. MPI aggregation is not required
+for such replicas, and introducing MPI solely for their timing is unnecessary.
+Apply the distributed timing rules below only when ranks jointly produce a result.
 
 Apply these timing rules literally and consistently:
 

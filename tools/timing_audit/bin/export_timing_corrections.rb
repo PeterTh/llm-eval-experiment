@@ -102,6 +102,15 @@ module TimingCorrectionExport
       raise "Audit selection flag differs" unless record.fetch("timing_fix_required") == (verdict == "invalid")
     end
     ids = resolved.values.select { |record| record.fetch("timing_fix_required") }.map { |record| record.fetch("program_id") }.sort
+    if (external = selection["external_validation_exclusions"])
+      relative = external.fetch("path")
+      raise "Unsafe external-validation evidence" if relative.start_with?("/") || relative.split("/").include?("..")
+      registry = ExternalValidationExclusions.new(File.join(base, relative))
+      raise "External-validation exclusion digest differs" unless registry.digest == external.fetch("sha256")
+      excluded = registry.ids_for(source_commit: selection.fetch("source_commit"), ids: ids)
+      raise "External-validation correction exclusions differ" unless excluded == external.fetch("excluded_ids")
+      ids -= excluded
+    end
     raise "Audit correction selection differs" unless ids == selection.fetch("correction_ids")
     [selection, resolved, ids]
   end
@@ -173,7 +182,8 @@ module TimingCorrectionExport
       root = stage.fetch(:root)
       %w[manifest.yaml inventory.jsonl trial-ids.txt prompt-template.txt proposal-schema.json result-schema.json
          runner-snapshot.rb static-evidence-snapshot.rb summary-trial.jsonl summary-full.jsonl summary-full.csv
-         platform-context.txt environment-evidence.yaml campaign.md pilot-review.md].each do |name|
+         platform-context.txt environment-evidence.yaml campaign.md pilot-review.md
+         external-validation-exclusions.json external-validation-exclusions-verifier.rb].each do |name|
         path = File.join(root, name)
         copy.call(path, "#{label}/#{name}") if File.file?(path)
       end
@@ -214,7 +224,7 @@ module TimingCorrectionExport
     TimingAudit.atomic_write(File.join(output, "validation-comparison.jsonl"), TimingAudit.dump_jsonl(validation_comparisons))
     method_layout = {}
     method_root = File.expand_path("..", __dir__)
-    %w[lib/timing_audit.rb lib/timing_fix.rb lib/timing_fix_evidence.rb lib/timing_fix_review.rb
+    %w[lib/timing_audit.rb lib/timing_fix.rb lib/timing_fix_evidence.rb lib/timing_fix_review.rb lib/external_validation_exclusions.rb
        lib/timing_fix_adjudication.rb lib/timing_fix_materializer.rb lib/timing_fix_finalize.rb
        bin/timing_fix.rb bin/timing_fix_review.rb bin/timing_fix_adjudication.rb
        bin/timing_fix_materialize.rb bin/timing_fix_finalize.rb bin/export_timing_corrections.rb

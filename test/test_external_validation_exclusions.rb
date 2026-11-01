@@ -2,6 +2,7 @@
 require "minitest/autorun"
 require "tmpdir"
 require_relative "../tools/timing_audit/lib/external_validation_exclusions"
+require_relative "../tools/timing_audit/bin/export_timing_corrections"
 
 class ExternalValidationExclusionsTest < Minitest::Test
   def setup
@@ -46,6 +47,25 @@ class ExternalValidationExclusionsTest < Minitest::Test
   def test_rejects_other_failed_stage
     @data["failed_stage"] = "validation_run"
     assert_raises(RuntimeError) { load_registry }
+  end
+
+  def test_correction_export_preserves_audit_but_excludes_source_pinned_external_failure
+    registry = load_registry
+    decisions = [{ "program_id" => @id, "final_verdict" => "invalid", "timing_review_required" => false, "timing_fix_required" => true }]
+    decision_path = File.join(@tmp, "decisions.jsonl")
+    File.write(decision_path, decisions.map { |row| JSON.generate(row) + "\n" }.join)
+    selection = { "schema_version" => 1, "source_commit" => @commit, "record_count" => 1,
+      "ordered_decisions" => [{ "path" => "decisions.jsonl", "sha256" => Digest::SHA256.file(decision_path).hexdigest }],
+      "verdict_counts" => { "invalid" => 1 }, "correction_ids" => [],
+      "external_validation_exclusions" => { "path" => "exclusions.json", "sha256" => registry.digest, "excluded_ids" => [@id] } }
+    path = File.join(@tmp, "selection.json")
+    File.write(path, JSON.generate(selection))
+    _selection, resolved, corrections = TimingCorrectionExport.resolved_audit_selection(@tmp, path)
+    assert_empty corrections
+    assert_equal "invalid", resolved.fetch(@id).fetch("final_verdict")
+    selection.fetch("external_validation_exclusions")["excluded_ids"] = []
+    File.write(path, JSON.generate(selection))
+    assert_raises(RuntimeError) { TimingCorrectionExport.resolved_audit_selection(@tmp, path) }
   end
 
   def test_rejects_mutated_output

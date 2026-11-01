@@ -266,6 +266,7 @@ module BenchmarkBatchExport
     progress = LocalEvaluation.load_yaml(File.join(run_dir, "benchmark-campaign/progress.yaml"))
     raise "Campaign has not completed" unless progress["phase"] == "complete" && progress["unchanged_partition_verified"] == true
     ids = BenchmarkValidationBatch.load_results(run_dir).select { |r| BenchmarkValidationBatch.fully_valid?(r) }.map(&:id_string).sort
+    ids -= campaign.fetch("excluded_validation_ids", [])
     results = BenchmarkValidationBatch.full_results(run_dir)
     raise "Final result set differs from valid programs" unless results.keys.sort == ids && ids.size == campaign.fetch("valid_programs")
     BenchmarkValidationBatch.verify_partition!(run_dir, ids)

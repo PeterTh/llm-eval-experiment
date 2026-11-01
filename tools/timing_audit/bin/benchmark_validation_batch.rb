@@ -4,6 +4,7 @@
 require "optparse"
 require_relative "../../../lib/local_evaluation"
 require_relative "../lib/timing_audit"
+require_relative "../lib/external_validation_exclusions"
 
 # Sequencing/provenance only. Measurement, builds, resource limits, resume checks
 # and source-correction authorization remain in the existing local pipeline.
@@ -71,10 +72,12 @@ module BenchmarkValidationBatch
     entries.to_h { |entry| [entry.fetch("program_id"), entry] }
   end
 
-  def eligible_partition(original_valid_ids, correction_ids, excluded_ids)
-    unless (correction_ids - original_valid_ids).empty? && (excluded_ids - correction_ids).empty?
+  def eligible_partition(original_valid_ids, correction_ids, excluded_ids, external_excluded_ids: [])
+    unless (correction_ids - original_valid_ids).empty? && (excluded_ids - correction_ids).empty? &&
+        (external_excluded_ids - original_valid_ids).empty? && (external_excluded_ids & correction_ids).empty?
       raise "Invalid corrected/excluded benchmark partition"
     end
+    excluded_ids = (excluded_ids + external_excluded_ids).uniq
     valid = (original_valid_ids - excluded_ids).sort
     corrected = (correction_ids - excluded_ids).sort
     { valid: valid, corrected: corrected, unchanged: valid - corrected }
@@ -127,7 +130,7 @@ module BenchmarkValidationBatch
   end
 
   def prepare(run_dir:, baseline_config:, corrections:, corrected_validation:, original_backup:, canary_model:,
-              validation_failures: nil, canary_fallback_benchmarks: [])
+              validation_failures: nil, canary_fallback_benchmarks: [], external_validation_exclusions: nil)
     run_dir = File.realpath(run_dir)
     campaign = File.join(run_dir, "benchmark-campaign")
     raise "Campaign already exists" if File.exist?(campaign)
@@ -143,6 +146,8 @@ module BenchmarkValidationBatch
     raise "Original validation is incomplete" unless results.map(&:id_string).sort == manifest.runs.keys.sort
     valid_ids = results.select { |result| fully_valid?(result) }.map(&:id_string).sort
     originally_valid_count = valid_ids.size
+    external = external_validation_exclusions && ExternalValidationExclusions.new(external_validation_exclusions)
+    external_ids = external ? external.ids_for(source_commit: original.fetch("commit"), ids: valid_ids) : []
     manifest.verify_input_revisions!(operation: "benchmark", selected_ids: valid_ids)
     evidence_path = File.join(corrections, "manifest.yaml")
     evidence = LocalEvaluation.load_yaml(evidence_path)
@@ -167,7 +172,8 @@ module BenchmarkValidationBatch
       corrected_results: corrected_results, original_commit: original.fetch("commit"),
       corrected_commit: evidence.dig("corrected_source", "commit"))
     excluded_ids = (failures.keys & manifest.runs.keys).sort
-    partition = eligible_partition(valid_ids, ids, excluded_ids)
+    partition = eligible_partition(valid_ids, ids, excluded_ids, external_excluded_ids: external_ids)
+    excluded_ids = (excluded_ids + external_ids).uniq.sort
     valid_ids, ids, original_only = partition.values_at(:valid, :corrected, :unchanged)
     corrected_root = corrected_manifest.data.fetch("experiment_repository").fetch("path")
     LocalEvaluation::SourceCorrectionAmendment.send(:verify_record_trees!, records, corrected_root,
@@ -206,6 +212,10 @@ module BenchmarkValidationBatch
     if validation_failures
       LocalEvaluation.atomic_write(File.join(campaign, "validation-failures.json"), File.binread(validation_failures), mode: 0o444)
     end
+    if external
+      LocalEvaluation.atomic_write(File.join(campaign, "external-validation-exclusions.json"), File.binread(external.path), mode: 0o444)
+      LocalEvaluation.atomic_write(File.join(campaign, "external-validation-verifier.rb"), File.binread(ExternalValidationExclusions.instance_method(:initialize).source_location.first), mode: 0o444)
+    end
     derived = File.join(campaign, "correction-evidence")
     %w[corrections.jsonl correction-ids.txt].each do |name|
       LocalEvaluation.atomic_write(File.join(derived, name), File.binread(File.join(corrections, name)), mode: 0o444)
@@ -217,6 +227,7 @@ module BenchmarkValidationBatch
     artifacts = %w[unchanged-ids.txt corrected-ids.txt canary-ids.txt excluded-validation-ids.txt correction-evidence/manifest.yaml
                    correction-evidence/corrections.jsonl correction-evidence/correction-ids.txt runner-snapshot.rb]
     artifacts << "validation-failures.json" if validation_failures
+    artifacts.concat(%w[external-validation-exclusions.json external-validation-verifier.rb]) if external
     data = { "schema_version" => 1, "created_at" => Time.now.iso8601, "run_dir" => run_dir,
       "manifest_sha256" => LocalEvaluation.sha256_file(manifest.path),
       "configuration_sha256" => frozen.digest, "baseline_configuration_sha256" => baseline.digest,
@@ -230,6 +241,7 @@ module BenchmarkValidationBatch
       "valid_programs" => valid_ids.size, "unchanged_programs" => original_only.size, "corrected_programs" => ids.size,
       "originally_valid_programs" => originally_valid_count, "excluded_validation_programs" => excluded_ids.size,
       "excluded_validation_ids" => excluded_ids,
+      "external_validation_excluded_ids" => external_ids,
       "canary_selection" => {
         "model" => canary_model, "preferred_benchmark" => "black-scholes",
         "fallback_benchmarks" => canary_fallback_benchmarks, "selected_ids" => canaries,
@@ -239,7 +251,7 @@ module BenchmarkValidationBatch
       "warmups" => 1, "measurements" => BENCHMARK_COUNT,
       "artifacts" => artifacts.to_h { |name| [name, LocalEvaluation.sha256_file(File.join(campaign, name))] } }
     LocalEvaluation.atomic_yaml_with_digest(File.join(campaign, "manifest.yaml"), data, immutable: true)
-    puts "Prepared #{valid_ids.size} programs: #{original_only.size} unchanged, #{ids.size} corrected, #{excluded_ids.size} excluded after failed revalidation; no validation or calibration repeated"
+    puts "Prepared #{valid_ids.size} programs: #{original_only.size} unchanged, #{ids.size} corrected, #{excluded_ids.size} excluded by validation; no validation or calibration repeated"
     data
   ensure
     host_lock&.close
@@ -257,6 +269,18 @@ module BenchmarkValidationBatch
     end
     raise "Run manifest changed" unless LocalEvaluation.sha256_file(File.join(run_dir, "evaluation_manifest.yaml")) == data.fetch("manifest_sha256")
     raise "Configuration changed" unless LocalEvaluation::BenchmarkConfig.new(File.join(run_dir, "benchmark_config.yaml")).digest == data.fetch("configuration_sha256")
+    external_ids = []
+    if data.fetch("artifacts").key?("external-validation-exclusions.json")
+      registry = ExternalValidationExclusions.new(File.join(root, "external-validation-exclusions.json"))
+      external_ids = registry.ids_for(source_commit: data.dig("original_source", "commit"), ids: LocalEvaluation::Manifest.new(run_dir).runs.keys)
+      verifier = ExternalValidationExclusions.instance_method(:initialize).source_location.first
+      unless external_ids == data.fetch("external_validation_excluded_ids") &&
+          LocalEvaluation.sha256_file(verifier) == data.fetch("artifacts").fetch("external-validation-verifier.rb")
+        raise "External-validation exclusions or verifier changed"
+      end
+      selected = %w[unchanged-ids.txt corrected-ids.txt canary-ids.txt].flat_map { |name| File.readlines(File.join(root, name), chomp: true) }
+      raise "Externally invalid program selected for benchmarking" unless (selected & external_ids).empty?
+    end
     if data.fetch("artifacts").key?("validation-failures.json")
       corrected = data.fetch("corrected_validation")
       corrected_root = corrected.fetch("run_dir")
@@ -268,10 +292,12 @@ module BenchmarkValidationBatch
       failures = approved_failures(File.join(root, "validation-failures.json"),
         corrected_manifest: corrected_manifest, corrected_results: load_results(corrected_root),
         original_commit: data.dig("original_source", "commit"), corrected_commit: data.fetch("corrected_source_commit"))
-      excluded = (failures.keys & LocalEvaluation::Manifest.new(run_dir).runs.keys).sort
+      excluded = ((failures.keys & LocalEvaluation::Manifest.new(run_dir).runs.keys) + external_ids).uniq.sort
       unless excluded == data.fetch("excluded_validation_ids") && excluded.size == data.fetch("excluded_validation_programs")
         raise "Adjudicated benchmark exclusions changed"
       end
+    elsif data.fetch("excluded_validation_ids") != external_ids || data.fetch("excluded_validation_programs") != external_ids.size
+      raise "Benchmark exclusions lack validation evidence"
     end
     data
   end
@@ -386,10 +412,11 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--canary-model=MODEL") { |v| options[:canary_model] = v }
     opts.on("--canary-fallback-benchmarks=LIST", Array, "Ordered fallback benchmarks when no unchanged black-scholes is eligible") { |v| options[:canary_fallback_benchmarks] = v }
     opts.on("--validation-failures=PATH", "Explicit user-approved correctness/output-contract failure dispositions") { |v| options[:validation_failures] = File.expand_path(v) }
+    opts.on("--external-validation-exclusions=PATH", "Source-pinned supplemental external-comparison failures") { |v| options[:external_validation_exclusions] = File.expand_path(v) }
   end.parse!
   required = command == "prepare" ? %i[run_dir baseline_config corrections corrected_validation original_backup canary_model] : %i[run_dir]
   abort "Usage: benchmark_validation_batch.rb prepare|run|status --run-dir=PATH [preparation options]" unless
     %w[prepare run status].include?(command) && ARGV.empty? &&
-    (options.keys - (command == "prepare" ? [:validation_failures, :canary_fallback_benchmarks] : [])).sort == required.sort
+    (options.keys - (command == "prepare" ? [:validation_failures, :canary_fallback_benchmarks, :external_validation_exclusions] : [])).sort == required.sort
   BenchmarkValidationBatch.public_send(command, **options)
 end

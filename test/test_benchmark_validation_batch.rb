@@ -4,6 +4,14 @@ require "minitest/autorun"
 require_relative "../tools/timing_audit/bin/benchmark_validation_batch"
 
 class BenchmarkValidationBatchTest < Minitest::Test
+  def test_external_failure_is_excluded_before_correction_without_changing_other_ids
+    original = %w[a b c d]
+    result = BenchmarkValidationBatch.eligible_partition(original, %w[b c], ["c"], external_excluded_ids: ["d"])
+    assert_equal({ valid: %w[a b], corrected: ["b"], unchanged: ["a"] }, result)
+    assert_equal %w[a b c d], original
+    assert_raises(RuntimeError) { BenchmarkValidationBatch.eligible_partition(original, ["b"], [], external_excluded_ids: ["b"]) }
+    assert_raises(RuntimeError) { BenchmarkValidationBatch.eligible_partition(original, ["b"], [], external_excluded_ids: ["unknown"]) }
+  end
   def test_canaries_preserve_first_repetition_when_it_is_eligible
     ids = LocalEvaluation::PAR_TYPES.flat_map { |backend|
       [2, 1].map { |run| "black-scholes_test_#{backend}_r#{run}" }

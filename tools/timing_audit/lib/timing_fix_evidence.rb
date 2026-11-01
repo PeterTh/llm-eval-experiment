@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "timing_audit"
+require_relative "external_validation_exclusions"
 
 # Shared evidence checks for new correction campaigns. Historical campaigns retain
 # their original verification rules unless they explicitly bind this helper.
@@ -18,6 +19,18 @@ module TimingFixEvidence
     return false unless expected
     [__FILE__, File.join(root, "static-evidence-snapshot.rb")].each do |path|
       raise "Static correction evidence helper changed" unless TimingAudit.sha256_file(path) == expected
+    end
+    if (exclusion = manifest["external_validation_exclusions"])
+      [File.expand_path("external_validation_exclusions.rb", __dir__), File.join(root, "external-validation-exclusions-verifier.rb")].each do |path|
+        raise "External-validation verifier changed" unless TimingAudit.sha256_file(path) == exclusion.fetch("verifier_sha256")
+      end
+      raise "Unsafe external-validation exclusion path" unless exclusion.fetch("path") == "external-validation-exclusions.json"
+      registry = ExternalValidationExclusions.new(File.join(root, exclusion.fetch("path")))
+      raise "External-validation exclusions changed" unless registry.digest == exclusion.fetch("sha256")
+      ids = TimingAudit.load_jsonl(File.join(root, "inventory.jsonl")).map { |row| row.fetch("id") }
+      unless registry.ids_for(source_commit: manifest.fetch("generated_source").fetch("commit"), ids: ids).empty?
+        raise "A failed external-validation program remains in the timing-correction inventory"
+      end
     end
     true
   end

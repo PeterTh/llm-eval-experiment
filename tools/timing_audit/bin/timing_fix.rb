@@ -16,6 +16,7 @@ when "prepare"
     opts.on("--output=PATH") { |value| options[:output_dir] = File.expand_path(value) }
     opts.on("--trial-size=N", Integer) { |value| options[:trial_size] = value }
     opts.on("--context=PATH") { |value| options[:context_path] = File.expand_path(value) }
+    opts.on("--validation-exclusions=PATH", "Verified source-pinned external-validation failures") { |value| options[:validation_exclusions] = File.expand_path(value) }
   end
   parser.parse!(ARGV)
   abort parser.to_s unless ARGV.empty? && options[:audit_root] && options[:output_dir]

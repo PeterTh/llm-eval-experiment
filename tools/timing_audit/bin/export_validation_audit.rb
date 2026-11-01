@@ -55,9 +55,12 @@ module ValidationAuditExport
         "log_sha256" => logs, "logs" => retained_logs }
     end
     TimingAudit.atomic_write(File.join(output_dir, "validation/records.jsonl"), TimingAudit.dump_jsonl(records))
-    Dir[File.join(run_dir, "validation/reference", "*", "{*.log,reference_metadata.yaml}")].sort.each do |path|
+    reference_files = Dir[File.join(run_dir, "validation/reference", "*", "{*.log,reference_metadata.yaml}")] +
+      Dir[File.join(run_dir, "validation/reference", "*", "*", "{validation_out_*.log,reference_metadata.yaml}")]
+    reference_files.sort.each do |path|
       next unless File.file?(path)
-      copy.call(path, "validation/references/#{File.basename(File.dirname(path))}/#{File.basename(path)}")
+      relative = path.delete_prefix(File.join(run_dir, "validation/reference") + "/")
+      copy.call(path, "validation/references/#{relative}")
     end
     pipeline = manifest.data.fetch("pipeline_source")
     method_layout = {}

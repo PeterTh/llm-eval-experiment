@@ -12,6 +12,7 @@ require "tmpdir"
 require "yaml"
 require_relative "timing_audit"
 require_relative "timing_fix_evidence"
+require_relative "external_validation_exclusions"
 
 module TimingFix
   SCHEMA_VERSION = 1
@@ -43,13 +44,14 @@ module TimingFix
 
   class InventoryBuilder
     def initialize(audit_root:, output_dir:, trial_size: DEFAULT_TRIAL_SIZE, context_path: nil,
-                   overlay_roots: [], source_root: nil)
+                   overlay_roots: [], source_root: nil, validation_exclusions: nil)
       @audit_root = File.realpath(audit_root)
       @overlay_roots = overlay_roots.map { |root| File.realpath(root) }
       @source_root = source_root && File.realpath(source_root)
       @output_dir = File.expand_path(output_dir)
       @trial_size = Integer(trial_size)
       @context_path = context_path
+      @validation_exclusions = validation_exclusions && ExternalValidationExclusions.new(validation_exclusions)
       raise "Trial size must be positive" unless @trial_size.positive?
     end
 
@@ -64,6 +66,8 @@ module TimingFix
       repository = TimingAudit::SourceRepository.new(root: generated.fetch("root"), commit: generated.fetch("commit"))
       records_by_id, decisions, decision_roots, audit_sources = resolved_audits(generated.fetch("commit"))
       correction_ids = decisions.select { |_id, decision| decision.fetch("final_verdict") == "invalid" }.keys.sort
+      excluded = @validation_exclusions ? @validation_exclusions.ids_for(source_commit: generated.fetch("commit"), ids: correction_ids) : []
+      correction_ids -= excluded
 
       records = correction_ids.map do |id|
         record = Marshal.load(Marshal.dump(records_by_id.fetch(id)))
@@ -93,6 +97,10 @@ module TimingFix
       TimingAudit.atomic_write(copied_runner, File.binread(runner_path))
       TimingAudit.atomic_write(File.join(@output_dir, "inventory.jsonl"), TimingAudit.dump_jsonl(records))
       TimingAudit.atomic_write(File.join(@output_dir, "trial-ids.txt"), trial_ids.join("\n") + "\n")
+      if @validation_exclusions
+        TimingAudit.atomic_write(File.join(@output_dir, "external-validation-exclusions.json"), File.binread(@validation_exclusions.path))
+        TimingAudit.atomic_write(File.join(@output_dir, "external-validation-exclusions-verifier.rb"), File.binread(File.expand_path("external_validation_exclusions.rb", __dir__)))
+      end
 
       manifest = {
         "schema_version" => SCHEMA_VERSION,
@@ -114,6 +122,13 @@ module TimingFix
           "trial_ids_sha256" => TimingAudit.sha256_file(File.join(@output_dir, "trial-ids.txt"))
         })
       }
+      if @validation_exclusions
+        manifest["external_validation_exclusions"] = {
+          "path" => "external-validation-exclusions.json", "sha256" => @validation_exclusions.digest,
+          "excluded_correction_ids" => excluded, "failed_stage" => "output_comparison",
+          "verifier_sha256" => TimingAudit.sha256_file(File.join(@output_dir, "external-validation-exclusions-verifier.rb"))
+        }
+      end
       TimingAudit.atomic_write(File.join(@output_dir, "manifest.yaml"), YAML.dump(manifest))
       puts "Prepared timing-fix proposal inventory: #{records.size} records"
       puts "Trial IDs:"

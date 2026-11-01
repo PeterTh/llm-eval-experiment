@@ -39,6 +39,9 @@ module LocalEvaluation
           env, command = @resources.command(par_type: info["par_type"], executable: executable,
                                             args: validation_args(info["benchmark"]), mode: :validation)
           puts "#{id}: timeout=#{VALIDATION_TIMEOUT}s env=#{env.inspect} command=#{Shellwords.join(command)}"
+          ExternalValidationCases.cases_for(info.fetch("benchmark"), info.fetch("par_type")).each do |definition|
+            puts "#{id}: supplemental external comparison #{definition.fetch('id')} args=#{Shellwords.join(definition.fetch('args'))}"
+          end
         end
         return
       end
@@ -52,6 +55,9 @@ module LocalEvaluation
       references = @selected.values.map { |info| info["benchmark"] }.uniq.sort.to_h do |benchmark|
         [benchmark, reference_output(benchmark)]
       end
+      @supplemental_references = @selected.values.flat_map do |info|
+        ExternalValidationCases.cases_for(info.fetch("benchmark"), info.fetch("par_type"))
+      end.uniq.to_h { |definition| [definition.fetch("id"), supplemental_reference_output(definition)] }
       @selected.each do |id, info|
         if completed?(id, info, existing[id])
           puts "Skipping completed validation #{id}"
@@ -133,6 +139,21 @@ module LocalEvaluation
         BuildSupport.find_executable(output_dir, info.fetch("benchmark"))
       end
       return false if result.validation_run && !command_artifacts_intact?(output_dir, "validation_out")
+      supplemental = metadata.fetch("supplemental_validation", [])
+      expected_cases = ExternalValidationCases.cases_for(info.fetch("benchmark"), info.fetch("par_type"))
+      if result.output_comparison
+        return false unless supplemental.map { |entry| entry.fetch("id") } == expected_cases.map { |entry| entry.fetch("id") }
+        return false unless supplemental.all? { |entry| entry.fetch("passed") }
+      end
+      supplemental.each do |entry|
+        definition = expected_cases.find { |candidate| candidate.fetch("id") == entry.fetch("id") }
+        return false unless definition && entry.fetch("args") == definition.fetch("args")
+        expected_logs = %w[command stdout stderr exitcode wall_time].map { |suffix| "validation_out_#{entry.fetch('id')}_#{suffix}.log" }
+        return false unless entry.fetch("logs").keys.sort == expected_logs.sort
+        return false unless entry.fetch("logs").all? do |name, digest|
+          File.basename(name) == name && File.file?(File.join(output_dir, name)) && LocalEvaluation.sha256_file(File.join(output_dir, name)) == digest
+        end
+      end
 
       true
     rescue StandardError
@@ -151,6 +172,7 @@ module LocalEvaluation
     end
 
     def validate_one(id, info, reference)
+      @supplemental_case_results = []
       benchmark = info.fetch("benchmark")
       model = info.fetch("model")
       par_type = info.fetch("par_type")
@@ -232,6 +254,27 @@ module LocalEvaluation
         messages << result.err_string
         return finish_result(result_path, messages, result)
       end
+      ExternalValidationCases.cases_for(benchmark, par_type).each do |definition|
+        case_id = definition.fetch("id")
+        prefix = File.join(output_dir, "validation_out_#{case_id}")
+        supplemental_reference = @supplemental_references.fetch(case_id)
+        supplemental_execution, supplemental_output = ExternalValidationCases.run(
+          executable: executable, definition: definition, par_type: par_type, prefix: prefix,
+          runner: @runner, resources: @resources, timeout: VALIDATION_TIMEOUT)
+        extra_comparison = ExternalValidationCases.assess(supplemental_reference, supplemental_output, supplemental_execution)
+        @supplemental_case_results << {
+          "id" => case_id, "args" => definition.fetch("args"), "passed" => extra_comparison.first,
+          "comparison" => extra_comparison.last, "execution" => supplemental_execution.to_h.transform_keys(&:to_s),
+          "reference_sha256" => Digest::SHA256.hexdigest(supplemental_reference),
+          "logs" => ExternalValidationCases.log_digests(prefix)
+        }
+        unless extra_comparison.first
+          result.err_string = "Output comparison FAILED (#{case_id}):\n#{extra_comparison.last}"
+          messages << result.err_string
+          return finish_result(result_path, messages, result)
+        end
+        messages << "Supplemental output comparison PASSED (#{case_id})."
+      end
       result.output_comparison = true
       messages << "Output comparison PASSED:\n#{comparison[1]}"
       finish_result(result_path, messages, result)
@@ -264,6 +307,7 @@ module LocalEvaluation
           "internal_validation" => !!result.internal_validation,
           "output_comparison" => !!result.output_comparison
         },
+        "supplemental_validation" => @supplemental_case_results || [],
         "completed_at" => Time.now.iso8601
       })
       result
@@ -278,12 +322,43 @@ module LocalEvaluation
       output.include?("Validation: FAILED") || output.include?("Validation fail")
     end
 
+    def supplemental_reference_output(definition)
+      benchmark = definition.fetch("benchmark")
+      directory = File.join(@validation_dir, "reference", benchmark, definition.fetch("id"))
+      metadata_path = File.join(directory, "reference_metadata.yaml")
+      output_path = File.join(directory, "validation_out_stdout.log")
+      executable = BuildSupport.find_executable(File.join(@validation_dir, "reference", benchmark), benchmark)
+      expected = {
+        "id" => definition.fetch("id"), "validation_args" => definition.fetch("args"),
+        "source_revision_sha256" => Digest::SHA256.hexdigest(YAML.dump(@manifest.data.fetch("benchmark_repository"))),
+        "executable_sha256" => LocalEvaluation.sha256_file(executable)
+      }
+      if File.file?(metadata_path) && File.file?(output_path)
+        metadata = LocalEvaluation.load_yaml(metadata_path)
+        if expected.all? { |key, value| metadata[key] == value } &&
+            metadata["output_sha256"] == LocalEvaluation.sha256_file(output_path)
+          return File.read(output_path)
+        end
+      end
+      BuildSupport.archive_existing(directory, File.join(@validation_dir, "reference_attempts", definition.fetch("id")))
+      execution, output = ExternalValidationCases.run(executable: executable, definition: definition,
+        par_type: "sequential", prefix: File.join(directory, "validation_out"), runner: @runner,
+        resources: @resources, timeout: VALIDATION_TIMEOUT)
+      unless execution.success && output.include?("Validation: PASSED") && !internal_failure?(output) &&
+          output.include?("=== RESULTS ===") && output.include?("=== END RESULTS ===")
+        raise InfrastructureError, "Supplemental reference failed: #{definition.fetch('id')}"
+      end
+      LocalEvaluation.atomic_yaml(metadata_path, expected.merge("output_sha256" => Digest::SHA256.hexdigest(output),
+        "generated_at" => Time.now.iso8601))
+      output
+    end
+
     def reference_output(benchmark)
       directory = File.join(@validation_dir, "reference", benchmark)
       output_path = File.join(directory, "validation_out_stdout.log")
       metadata_path = File.join(directory, "reference_metadata.yaml")
       revision_digest = Digest::SHA256.hexdigest(YAML.dump(@manifest.data.fetch("benchmark_repository")))
-      if File.file?(output_path) && File.file?(metadata_path)
+      if File.file?(output_path) && File.file?(metadata_path) && File.executable?(File.join(directory, LocalEvaluation.executable_name(benchmark)))
         metadata = LocalEvaluation.load_yaml(metadata_path)
         if metadata["validation_args"] == validation_args(benchmark) &&
            metadata["source_revision_sha256"] == revision_digest

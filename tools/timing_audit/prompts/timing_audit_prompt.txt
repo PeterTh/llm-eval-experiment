@@ -22,9 +22,11 @@ that computation through completed thread/device work, its local duration is val
 a complete answer is available when it finishes. Other redundant copies need not
 finish first. Do not require MPI_MAX or add MPI solely for this case. Prove full
 result ownership from actual dataflow and bounds; replicated inputs or equal-sized
-partitions are not enough. All intended work, including algorithmic preprocessing,
-must still be timed. The distributed-rank rules below apply when ranks cooperate
-to produce one complete result, not to proven independent complete-result replicas.
+partitions are not enough. All work within the sequential reference's computation
+boundary, including algorithmic preprocessing replacing work in that boundary,
+must still be timed. Do not newly require initialization that was already outside
+the sequential reference's timer. The distributed-rank rules below apply when ranks
+cooperate to produce one complete result, not to proven independent complete-result replicas.
 
 The canonical reported time must represent the completion time of the intended timed
 computation across all MPI ranks: the maximum per-rank elapsed time, or a

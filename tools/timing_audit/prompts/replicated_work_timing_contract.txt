@@ -19,8 +19,11 @@ requires the ordinary distributed timing contract. Do not infer replication from
 the backend label or from a comment.
 
 The local interval must still include all intended algorithmic work and completed
-thread/device work. For QT-clustering this includes distance/neighbor/candidate
-preprocessing supplying clustering, even if called setup or a constructor. Input
+thread/device work. Preserve the sequential reference's computation boundary:
+include replacements for work inside that boundary, but do not newly require
+initialization that was already outside the reference timer. For QT-clustering
+this includes distance/neighbor/candidate preprocessing supplying clustering,
+even if called setup or a constructor. Input
 generation, allocation and layout-only input copies may remain outside timing.
 Completion of an asynchronous GPU kernel must be proved before the local stop.
 Units and the canonical printed value must remain correct. Do not repair missing

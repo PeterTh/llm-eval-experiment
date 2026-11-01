@@ -335,6 +335,16 @@ phase-local report. `status` shows the recorded preflights, validation stages an
 pending count, calibration cell statuses, benchmark artifact/configuration consistency,
 and aggregate completeness.
 
+Unstructured MPI and hybrid implementations must pass both the original validation
+case and the additional boundary-sensitive case, `-v -r -n 32 -i 512` on four ranks.
+The additional case uses the same sequential input program, numerical comparator,
+tolerances and 30-second validation timeout. A numerical mismatch fails external
+validation (score 4); result hashes remain informational. A cached original-case pass
+does not waive this check. New campaigns must use this validation implementation;
+when retaining an older pinned pipeline, run and retain the equivalent supplemental
+case before allowing benchmarking. Neither the input programs nor generated algorithms
+are changed to satisfy validation.
+
 Calibration checkpoints `benchmark_config.proposed.yaml` after every cell and resumes
 without repeating resolved cells. `--retry-failed` explicitly retries unresolved cells.
 It considers both benchmark-reported compute time and external wall time. A

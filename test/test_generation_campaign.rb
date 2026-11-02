@@ -9,8 +9,8 @@ class GenerationCampaignTest < Minitest::Test
     attr_accessor :produce, :git_responses
     attr_reader :launched, :committed, :git_calls, :cleaned
 
-    def initialize(root)
-      super
+    def initialize(root, **options)
+      super(root, **options)
       @launched, @git_calls, @git_responses, @cleaned = [], [], {}, []
     end
 
@@ -181,6 +181,27 @@ class GenerationCampaignTest < Minitest::Test
     assert_empty @campaign.launched
     assert_equal "needs_review", progress.fetch("status")
     assert_match "Operator stop", progress.fetch("error")
+  end
+
+  def test_priority_yield_finishes_current_observation_and_preserves_outputs
+    gate
+    @campaign = SimulatedCampaign.new(@root, yield_at: "2026-11-06T17:00:00Z")
+    now = Time.utc(2026, 11, 6, 16, 59)
+    @campaign.produce = lambda do |id|
+      record(id)
+      now = Time.utc(2026, 11, 6, 17, 1)
+    end
+    Time.stub(:now, -> { now }) do
+      capture_io { assert_raises(GenerationCampaign::PriorityPause) { @campaign.run } }
+    end
+    assert_equal 1, @campaign.launched.size
+    assert_equal [@ids[1]], @campaign.cleaned
+    assert_equal "priority_paused", progress.fetch("status")
+    assert_equal 2, progress.fetch("completed")
+    assert_nil progress.fetch("error")
+    assert File.file?(File.join(@results, @ids[1], "timing.txt"))
+    refute File.exist?(File.join(@results, @ids[2]))
+    refute @campaign.committed
   end
 
   def test_existing_staged_user_changes_are_not_modified

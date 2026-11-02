@@ -7,17 +7,17 @@ require "digest"
 require "time"
 require_relative "opencode_campaign_queue"
 
-# Launch only a declared, prepared pair. The frozen controller owns generation;
+# Launch only a declared, prepared campaign/order. The frozen controller owns generation;
 # this wrapper creates provenance and a low-frequency status timer, not an agent.
-abort "usage: launch_opencode_queue.rb PAID_CAMPAIGN FREE_CAMPAIGN SETUP_DIRECTORY" unless ARGV.size == 3
-paths = ARGV.take(2).map { |path| File.realpath(path) }
+abort "usage: launch_opencode_queue.rb CAMPAIGN [FREE_CAMPAIGN] SETUP_DIRECTORY" unless [2, 3].include?(ARGV.size)
+paths = ARGV[0...-1].map { |path| File.realpath(path) }
 setup = File.realpath(ARGV.last)
 manifests = paths.map { |path| JSON.parse(File.read(File.join(path, "campaign.json"))) }
 order = manifests.flat_map { |manifest| manifest.fetch("models").keys }
-raise "Unapproved campaign pair" unless OpenCodeCampaignQueue::PROFILE_PAIRS.include?(order)
+raise "Unapproved campaign order" unless OpenCodeCampaignQueue::PROFILE_ORDERS.include?(order)
 raise "Method revisions differ" unless manifests.map { |manifest| manifest.fetch("source_commit") }.uniq.size == 1
 check = JSON.parse(File.read(File.join(setup, "setup-check.json")))
-raise "Setup did not cover this pair" unless check.fetch("profiles").keys == order
+raise "Setup did not cover this order" unless check.fetch("profiles").keys == order
 raise "Setup used inference" unless check.fetch("inferences_launched").zero?
 tests = File.read(File.join(setup, "regression-tests.log"))
 counts = tests.scan(/^(\d+) runs, (\d+) assertions, (\d+) failures, (\d+) errors, (\d+) skips$/).last&.map(&:to_i)
@@ -64,9 +64,13 @@ queue = { "created_at" => Time.now.utc.iso8601, "campaigns" => paths, "profiles"
   "source_commit" => manifests.first.fetch("source_commit"), "generation_unit" => unit,
   "monitor_unit" => "#{monitor}.service", "monitor_timer" => "#{monitor}.timer",
   "monitor_note" => "Four-hour status timer records progress; it does not wake an assistant. Actively inspect the initial production pilots.",
-  "schedule" => "First campaign, then the free campaign; yield early at a subscription-quota boundary and return to unfinished first-campaign work. All generation serial; no native evaluation overlaps it.",
+  "schedule" => paths.size == 1 ? "Single approved campaign; pause and release host at a quota boundary. No alternate model. All generation serial; no native evaluation overlaps it." : "First campaign, then the free campaign; yield early at a subscription-quota boundary and return to unfinished first-campaign work. All generation serial; no native evaluation overlaps it.",
   "go_balance_fallback_disabled" => true, "operator_confirmation" => "Use balance off, previously confirmed by the user; this campaign does not change billing settings.",
-  "free_model_substitution_allowed" => false, "fable" => "Remains paused at 139/220; re-evaluate priority at its 2026-10-30T17:00Z weekly reset." }
+  "free_model_substitution_allowed" => false, "fable" => manifests.first.fetch("paused_campaign") }
+if paths.size == 1
+  queue["yield_at"] = manifests.first.fetch("paused_campaign").fetch("resume_not_before")
+  raise "Priority campaign is already due; reassess order before launching" unless Time.iso8601(queue.fetch("yield_at")) > Time.now
+end
 File.write(File.join(root, "queue.json"), JSON.pretty_generate(queue) + "\n")
 FileUtils.cp_r(setup, File.join(root, "setup"))
 FileUtils.cp(__FILE__, File.join(root, "launch.rb"))

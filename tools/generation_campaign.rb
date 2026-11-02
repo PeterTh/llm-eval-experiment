@@ -20,11 +20,14 @@ class GenerationCampaign
     end
   end
 
-  def initialize(root, go_quota_mode: :wait, stop_files: [])
+  class PriorityPause < StandardError; end
+
+  def initialize(root, go_quota_mode: :wait, stop_files: [], yield_at: nil)
     raise "Invalid Go quota mode" unless %i[wait yield].include?(go_quota_mode)
     @go_quota_mode = go_quota_mode
     @root = File.realpath(root)
     @stop_files = [File.join(@root, "STOP"), *stop_files]
+    @yield_at = yield_at && Time.iso8601(yield_at)
     @manifest = JSON.parse(File.read(File.join(@root, "campaign.json")))
     @harness = @manifest.fetch("harness", "claude")
     raise "Unsupported generation harness" unless %w[claude codex opencode].include?(@harness)
@@ -100,7 +103,7 @@ class GenerationCampaign
     @preflight_ids.each { |id| execute_observation(id, phase: "preflight") }
     gate
     snapshot("preflight_complete")
-  rescue QuotaPause
+  rescue QuotaPause, PriorityPause
     raise
   rescue StandardError => e
     snapshot("needs_review", error: "#{e.class}: #{e.message}") if locked
@@ -127,8 +130,10 @@ class GenerationCampaign
     unit, result = Open3.capture2("systemctl", "--user", "show", @manifest.fetch("generation_unit"),
       "-p", "LoadState", "-p", "ActiveState", "-p", "SubState", "-p", "ExecMainStatus")
     unit_state = result.success? ? unit.lines.to_h { |line| line.strip.split("=", 2) } : {}
-    health = if %w[complete needs_review preflight_complete].include?(value["status"])
+    health = if %w[complete needs_review preflight_complete priority_paused].include?(value["status"])
       value["status"]
+    elsif value["status"] == "quota_wait" && unit_state["ActiveState"] != "active"
+      "quota_wait"
     elsif unit_state["ActiveState"] != "active"
       "unexpected_stop"
     else
@@ -158,7 +163,7 @@ class GenerationCampaign
     recover_usage!(Dir[File.join(@observations, "*.json")].sort.map { |p| JSON.parse(File.read(p)) }) if @harness == "codex"
     commit_outputs
     snapshot("complete")
-  rescue QuotaPause
+  rescue QuotaPause, PriorityPause
     raise
   rescue StandardError => e
     snapshot("needs_review", error: "#{e.class}: #{e.message}") if locked
@@ -177,6 +182,7 @@ class GenerationCampaign
     ensure_account_idle!
     wait_for_go_access!(id, phase: phase)
     ensure_account_idle!
+    check_stop!
     ids_path = File.join(@root, "active-run-ids.txt")
     File.write(ids_path, "#{id}\n")
     command = ["/usr/bin/ruby", File.join(@manifest.fetch("runtime_root"), "run.rb"), "--production", "--run",
@@ -262,6 +268,10 @@ class GenerationCampaign
 
   def check_stop!
     raise "Operator stop requested" if @stop_files.any? { |path| File.exist?(path) }
+    if @yield_at && Time.now >= @yield_at
+      snapshot("priority_paused")
+      raise PriorityPause, "Yielding at an observation boundary for priority work scheduled at #{@yield_at.utc.iso8601}"
+    end
   end
 
   def go_access(model)

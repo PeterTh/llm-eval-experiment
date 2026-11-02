@@ -203,6 +203,19 @@ class OpenCodeGenerationTest < Minitest::Test
     end
   end
 
+  def test_glm_uses_high_stock_reasoning_advertised_limit_and_existing_capability_policy
+    profile = OpenCodeHarness.campaign_profile("glm-5.3-oc-high")
+    assert_equal "opencode-go/glm-5.3", profile.fetch("model")
+    assert_equal "high", profile.fetch("reasoning_effort")
+    refute profile.fetch("free_only")
+    opencode_fixture(@directory, model: profile.fetch("model"), advertised_output: true)
+    report = OpenCodeGenerationObservation.read(@directory, model: profile.fetch("model"), effort: "high")
+    assert_equal 131_072, report.dig("output_token_policy", "max_output_tokens")
+    assert_equal "high", @evidence.dig("resolved_model", "options", "reasoningEffort")
+    OpenCodeHarness::FORBIDDEN_TOOLS.each { |tool| assert_equal "deny", @evidence.dig("requested_config", "permission", tool) }
+    assert_raises(OpenCodeHarness::Invalid) { OpenCodeHarness.config(model: profile.fetch("model"), effort: "medium") }
+  end
+
   def test_environment_does_not_inherit_provider_or_harness_overrides
     keys = %w[OPENAI_API_KEY ANTHROPIC_API_KEY OPENCODE_CONFIG_CONTENT OPENCODE_EXPERIMENTAL OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX HTTP_PROXY]
     before = keys.to_h { |key| [key, ENV[key]] }

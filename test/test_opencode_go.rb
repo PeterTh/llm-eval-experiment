@@ -11,7 +11,7 @@ class OpenCodeGoTest < Minitest::Test
     @auth = File.join(@tmp, "auth.json")
     File.write(@auth, JSON.generate({ "opencode-go" => { "type" => "api", "key" => "fixture-only" } }), perm: 0600)
     @usage = %w[rolling weekly monthly].to_h { |name| [name, { "status" => "ok", "percent" => 0, "resetsAt" => "2026-10-20T00:00:00Z" }] }
-    @models = %w[deepseek-v4.1-flash minimax-m3.1-flash-free claude-haiku-5-5 beam-free].map { |id| { "id" => id } }
+    @models = %w[deepseek-v4.1-flash minimax-m3.1-flash-free claude-haiku-5-5 beam-free glm-5.3].map { |id| { "id" => id } }
     @requester = ->(path) { path.end_with?("/usage") ? { "usage" => @usage } : { "data" => @models } }
   end
 
@@ -71,6 +71,14 @@ class OpenCodeGoTest < Minitest::Test
     assert_raises(OpenCodeGo::Invalid) { check }
   end
 
+  def test_glm_uses_paid_subscription_quota_and_never_substitutes_a_model
+    assert check("opencode-go/glm-5.3").fetch("allowed")
+    @usage["monthly"]["percent"] = 95
+    refute check("opencode-go/glm-5.3").fetch("allowed")
+    @models.reject! { |model| model["id"] == "glm-5.3" }
+    assert_raises(OpenCodeGo::Invalid) { check("opencode-go/glm-5.3") }
+  end
+
   class QuotaOnlyCampaign < GenerationCampaign
     attr_accessor :access_report
     def ensure_account_idle!; end
@@ -78,7 +86,7 @@ class OpenCodeGoTest < Minitest::Test
     def launch(_command) = raise("Quota-blocked observation must not launch")
   end
 
-  def quota_campaign(stop_files: [])
+  def quota_campaign(stop_files: [], yield_at: nil)
     id = "black-scholes_deepseek-v4.1-flash-oc-high_omp_r1"
     manifest = { "harness" => "opencode", "campaign_id" => "20261019-000000", "expected_runs" => 1,
       "persistent_results" => File.join(@tmp, "results"), "preflight_ids" => [id],
@@ -87,7 +95,7 @@ class OpenCodeGoTest < Minitest::Test
     FileUtils.mkdir_p(manifest.fetch("persistent_results"))
     File.write(File.join(@tmp, "campaign.json"), JSON.generate(manifest))
     File.write(File.join(@tmp, "run-ids.txt"), id + "\n")
-    QuotaOnlyCampaign.new(@tmp, go_quota_mode: :yield, stop_files: stop_files)
+    QuotaOnlyCampaign.new(@tmp, go_quota_mode: :yield, stop_files: stop_files, yield_at: yield_at)
   end
 
   def test_controller_quota_yield_is_not_an_infrastructure_failure_and_creates_no_observation
@@ -108,9 +116,19 @@ class OpenCodeGoTest < Minitest::Test
     assert_empty Dir.children(File.join(@tmp, "results"))
   end
 
+  def test_priority_boundary_pauses_before_any_new_preflight_without_infrastructure_failure
+    driver = quota_campaign(yield_at: "2026-10-20T00:00:00Z")
+    Time.stub(:now, Time.utc(2026, 10, 20)) do
+      capture_io { assert_raises(GenerationCampaign::PriorityPause) { driver.preflight } }
+    end
+    assert_equal "priority_paused", JSON.parse(File.read(File.join(@tmp, "progress.json"))).fetch("status")
+    assert_empty Dir.children(File.join(@tmp, "results"))
+    assert_empty Dir.children(File.join(@tmp, "observations"))
+  end
+
   class SimulatedQueue < OpenCodeCampaignQueue
     attr_reader :launched
-    attr_accessor :fail_first, :pause_first
+    attr_accessor :fail_first, :pause_first, :priority_pause
     def initialize(root)
       super
       @launched = []
@@ -118,6 +136,7 @@ class OpenCodeGoTest < Minitest::Test
     def run_campaign(path, manifest, quota_mode:)
       @launched << manifest.fetch("models").keys.first
       raise "infrastructure failure" if @fail_first
+      raise GenerationCampaign::PriorityPause, "Priority work is due" if @priority_pause
       if @pause_first && @launched.size == 1
         raise "Expected quota yield" unless quota_mode == :yield
         raise GenerationCampaign::QuotaPause, { "resume_not_before" => "2026-10-20T00:01:00Z" }
@@ -204,5 +223,32 @@ class OpenCodeGoTest < Minitest::Test
     manifest["models"].values.first["model"] = "opencode-go/beam-paid"
     File.write(path, JSON.generate(manifest))
     assert_raises(RuntimeError) { OpenCodeCampaignQueue.new(@tmp) }
+  end
+
+  def test_single_glm_campaign_runs_only_once_and_reuses_completed_results
+    queue = make_queue(%w[glm-5.3-oc-high])
+    queue.run
+    queue.run
+    assert_equal %w[glm-5.3-oc-high], queue.launched
+    assert_equal "complete", JSON.parse(File.read(File.join(@tmp, "progress.json"))).fetch("status")
+  end
+
+  def test_single_glm_campaign_yields_quota_without_launching_an_alternative_or_holding_host
+    queue = make_queue(%w[glm-5.3-oc-high])
+    queue.pause_first = true
+    capture_io { queue.run }
+    assert_equal %w[glm-5.3-oc-high], queue.launched
+    assert_equal "quota_paused", JSON.parse(File.read(File.join(@tmp, "progress.json"))).fetch("status")
+    assert File.file?(File.join(@tmp, "quota-pause.json"))
+    refute File.file?(File.join(@tmp, "quota-handoff.json"))
+    File.open("/tmp/local-evaluation-#{Process.uid}-performance.lock", "a") { |lock| assert lock.flock(File::LOCK_EX | File::LOCK_NB) }
+  end
+
+  def test_single_glm_campaign_yields_priority_without_an_infrastructure_failure
+    queue = make_queue(%w[glm-5.3-oc-high])
+    queue.priority_pause = true
+    capture_io { queue.run }
+    assert_equal %w[glm-5.3-oc-high], queue.launched
+    assert_equal "priority_paused", JSON.parse(File.read(File.join(@tmp, "progress.json"))).fetch("status")
   end
 end

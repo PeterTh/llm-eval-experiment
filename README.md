@@ -182,7 +182,8 @@ OpenCode Go uses a separate, private subscription credential and requires operat
 confirmation that **Use balance is off**, with no paid-credit fallback. Its profiles
 are `deepseek-v4.1-flash-oc-high` (the middle supported effort; no medium is exposed),
 `minimax-m3.1-flash-oc-medium` (the free alias only),
-`claude-haiku-5.5-oc-medium`, and `beam-1.0-oc-medium` (the free alias only). Prepare one with
+`claude-haiku-5.5-oc-medium`, `beam-1.0-oc-medium` (the free alias only), and
+`glm-5.3-oc-high` (the middle supported effort; no medium is exposed). Prepare one with
 `--profile=PROFILE --go-balance-fallback-disabled`. MiniMax and Beam catalog entries
 are frozen in `lib/opencode_models/`; the stock executable, prompts and adapters are
 unchanged. Go's native edit/write tools serve the same local editing capability as
@@ -206,13 +207,16 @@ separately. Exhausting the advertised allowance is a retained generation outcome
 not grounds for an automatic retry.
 
 `tools/opencode_campaign_queue.rb run QUEUE_ROOT` accepts a `queue.json` listing
-an approved pair of prepared campaign paths in `campaigns`: DeepSeek then MiniMax,
-or Haiku then Beam, plus a passing
+an approved order of prepared campaign paths in `campaigns`: DeepSeek then MiniMax,
+Haiku then Beam, or GLM alone, plus a passing
 `regression-tests.log` in each campaign. It checks the four reusable pilots before
 continuing each campaign. Read-only Go admission checks run between observations,
 outside task timing: paid generation pauses at 95% of any quota window. The queue
 switches to the selected free campaign at that boundary, then resumes unfinished
 subscription-quota work. Completed observations and production pilots are reused.
+For a single GLM campaign, a quota boundary instead releases the host without
+launching another model. An optional `yield_at` gives priority work the next
+observation boundary, without terminating the current task.
 The free alias must still be available; no paid replacement is selected. A `STOP`
 file in the queue or campaign prevents the next observation without interrupting
 an active one. `status` records progress and optional `generation_unit` health;
@@ -220,10 +224,14 @@ a monitor timer records status but does not itself notify an assistant. Generati
 is serial. Queue order covers generation only; an operator-requested full
 evaluation and publication takes precedence over starting the next campaign.
 
-`tools/launch_opencode_queue.rb PAID_CAMPAIGN FREE_CAMPAIGN SETUP_DIRECTORY`
-records and launches an approved pair after checking its frozen method, passing
+`tools/launch_opencode_queue.rb CAMPAIGN [FREE_CAMPAIGN] SETUP_DIRECTORY`
+records and launches an approved order after checking its frozen method, passing
 regressions, no-inference isolation/hardware checks and suspended Fable state.
 The setup directory contains `setup-check.json` and `regression-tests.log`.
+For a single profile, `tools/check_opencode_campaign_setup.rb PROFILE EMPTY_DIRECTORY`
+runs the no-inference checks and retains selected public model metadata, including
+published pricing, without retaining credentials or whole catalogs.
+The single-campaign launcher sets `yield_at` to the preserved Fable weekly reset.
 The queue holds the shared native-performance lock for its lifetime. The launched
 four-hour timer records progress; it does not notify an assistant by itself.
 

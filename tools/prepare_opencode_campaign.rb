@@ -66,11 +66,16 @@ preserved.each do |name, digest|
 end
 pause_count = preserved.size
 pause_reset = pause.fetch("next_weekly_reset")
-tranche_path = File.join(fable, "filesystem-isolation-20261024/tranche-completion.json")
-if File.file?(tranche_path)
+tranche_files = [
+  ["quota-resume-20261030/tranche-completion-20261031.json", "retained-after-tranche-20261031-sha256.json"],
+  ["filesystem-isolation-20261024/tranche-completion.json", "retained-after-tranche-sha256.json"]
+]
+latest = tranche_files.find { |receipt, _| File.file?(File.join(fable, receipt)) }
+if latest
+  tranche_path = File.join(fable, latest.first)
   tranche = JSON.parse(File.read(tranche_path))
   raise "Fable tranche is not suspended" unless tranche["status"] == "quota_paused_account_idle" && tranche["automatic_restart_enabled"] == false
-  retained_path = File.join(File.dirname(tranche_path), "retained-after-tranche-sha256.json")
+  retained_path = File.join(File.dirname(tranche_path), latest.last)
   raise "Fable retention manifest changed" unless Digest::SHA256.file(retained_path).hexdigest == tranche.fetch("retained_files_sha256")
   retained = JSON.parse(File.read(retained_path))
   pause_count = tranche.fetch("completed")
@@ -80,7 +85,14 @@ if File.file?(tranche_path)
   end
   progress = JSON.parse(File.read(File.join(fable, "progress.json")))
   raise "Fable progress differs" unless progress.fetch("completed") == pause_count && Dir[File.join(fable, "observations/*.json")].size == pause_count
-  reset = tranche.fetch("quota").fetch("limits").select { |limit| limit["kind"] == "weekly_scoped" && limit["is_active"] }.map { |limit| Time.iso8601(limit.fetch("resets_at")) }.max
+  tranche.fetch("observation_sha256", {}).each do |name, digest|
+    raise "Paused Fable observation changed: #{name}" unless Digest::SHA256.file(File.join(fable, "observations", name)).hexdigest == digest
+  end
+  reset = if tranche["next_weekly_reset"]
+    Time.iso8601(tranche.fetch("next_weekly_reset"))
+  else
+    tranche.fetch("quota").fetch("limits").select { |limit| limit["kind"] == "weekly_scoped" && limit["is_active"] }.map { |limit| Time.iso8601(limit.fetch("resets_at")) }.max
+  end
   raise "Missing Fable weekly reset" unless reset
   pause_reset = reset.utc.iso8601
   pause_path = tranche_path
@@ -164,11 +176,11 @@ if go_access
     "scope" => profile["native_batch"] ? "Same named model and effort in native Claude Code versus OpenCode via Go; provider route also changes." : "Additional model in the established OpenCode harness; not a native-harness comparison for this exact model.",
     "native_batch" => profile["native_batch"], "native_profile" => profile["native_profile"],
     "interpretation" => "Same sequential inputs, budgets and capability policy. Provider aliases are not immutable snapshots. Stock model-specific prompts/adapters are retained; not a pure harness-only causal comparison.",
-    "reasoning_selection" => profile_name.start_with?("deepseek") ? "High: supported middle option among low/high/max; no medium option exposed." : "Explicit medium effort, verified through the stock model adapter before inference.",
+    "reasoning_selection" => profile.fetch("reasoning_effort") == "high" ? "High: supported middle option among low/high/max; no medium option exposed." : "Explicit medium effort, verified through the stock model adapter before inference.",
     "free_offer" => profile.fetch("free_only") ? "Free alias only; stop if unavailable, never silently replace it with a paid model." : nil
   }
   manifest["quota_policy"] = "Check Go model availability and all quota windows before each new observation; pause at 95% of any window until its reset. Free-only models bypass paid-quota gating. Checks and waiting are outside generation timing."
-  manifest["next_stages"].unshift("Run this campaign serially under its approved queue order; yield to the approved free model at a paid-quota boundary. No native evaluation overlaps generation.")
+  manifest["next_stages"].unshift("Run serially under its approved schedule; retain completed observations at a quota or priority boundary. No alternate model unless separately authorized; no native evaluation overlaps generation.")
 end
 File.write(File.join(campaign, "campaign.json"), JSON.pretty_generate(manifest) + "\n")
 dry = checked("ruby", File.join(runtime, "run.rb"), "--production", "--continue=#{batch}")

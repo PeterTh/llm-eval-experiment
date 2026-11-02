@@ -10,6 +10,7 @@ require_relative "generation_campaign"
 class OpenCodeCampaignQueue
   PROFILES = %w[deepseek-v4.1-flash-oc-high minimax-m3.1-flash-oc-medium].freeze
   PROFILE_PAIRS = [PROFILES, %w[claude-haiku-5.5-oc-medium beam-1.0-oc-medium].freeze].freeze
+  PROFILE_ORDERS = [*PROFILE_PAIRS, %w[glm-5.3-oc-high].freeze].freeze
 
   def initialize(root)
     @root = File.realpath(root)
@@ -19,7 +20,7 @@ class OpenCodeCampaignQueue
       [path, JSON.parse(File.read(File.join(path, "campaign.json")))]
     end
     order = @campaigns.map { |_, manifest| manifest.fetch("models").keys }.flatten
-    raise "Queue scope differs" unless PROFILE_PAIRS.include?(order) && @campaigns.size == 2
+    raise "Queue scope differs" unless PROFILE_ORDERS.include?(order) && @campaigns.size == order.size
     raise "Queue method revisions differ" unless @campaigns.map { |_, manifest| manifest.fetch("source_commit") }.uniq.size == 1
     @campaigns.each do |_, manifest|
       raise "Not an approved Go campaign" unless manifest["harness"] == "opencode" && manifest["opencode_access"] == "opencode-go" && manifest["go_balance_fallback_disabled"] == true
@@ -43,22 +44,36 @@ class OpenCodeCampaignQueue
     raise "Queue already running" unless locked
     host_lock = File.open("/tmp/local-evaluation-#{Process.uid}-performance.lock", "a")
     raise "Another native workload owns the host" unless host_lock.flock(File::LOCK_EX | File::LOCK_NB)
-    # Paid-quota campaign first; a boundary yields to the approved free offer.
+    # A single campaign releases the host at quota. In a declared pair, the
+    # paid-quota campaign runs first and yields to the approved free offer.
     # Resume any remaining paid observations after the free campaign, waiting for
     # quota only once there is no free generation left to do.
-    [*@campaigns, @campaigns.first].each do |path, manifest|
+    schedule = @campaigns.size == 1 ? @campaigns : [*@campaigns, @campaigns.first]
+    schedule.each do |path, manifest|
       raise "Queue operator stop requested" if File.exist?(File.join(@root, "STOP"))
       next if completed?(path, manifest)
       write("progress.json", { "status" => "running", "active_campaign" => path, "checked_at" => Time.now.utc.iso8601 })
       free_pending = !completed?(*@campaigns.last)
-      quota_mode = path == @campaigns.first.first && free_pending ? :yield : :wait
+      quota_mode = @campaigns.size == 1 || (path == @campaigns.first.first && free_pending) ? :yield : :wait
       begin
         run_campaign(path, manifest, quota_mode: quota_mode)
       rescue GenerationCampaign::QuotaPause => e
         raise unless quota_mode == :yield
+        if @campaigns.size == 1
+          write("quota-pause.json", { "paused_campaign" => path, "checked_at" => Time.now.utc.iso8601, "quota" => e.report })
+          write("progress.json", { "status" => "quota_paused", "active_campaign" => path, "checked_at" => Time.now.utc.iso8601,
+            "resume_not_before" => e.report.fetch("resume_not_before"), "note" => "Completed observations retained; host released; no alternate model or paid fallback." })
+          puts "#{manifest.fetch('label')}: quota reached; preserving completed observations and releasing the host."
+          return
+        end
         write("quota-handoff.json", { "paused_campaign" => path, "next_campaign" => @campaigns.last.first,
           "checked_at" => Time.now.utc.iso8601, "quota" => e.report })
         puts "#{manifest.fetch('label')}: preserving completed observations at the quota boundary and switching to #{@campaigns.last.last.fetch('label')}."
+      rescue GenerationCampaign::PriorityPause => e
+        write("progress.json", { "status" => "priority_paused", "active_campaign" => path,
+          "checked_at" => Time.now.utc.iso8601, "note" => e.message })
+        puts e.message
+        return
       end
     end
     write("progress.json", { "status" => "complete", "checked_at" => Time.now.utc.iso8601,
@@ -80,7 +95,7 @@ class OpenCodeCampaignQueue
   end
 
   def run_campaign(path, manifest, quota_mode:)
-    driver = GenerationCampaign.new(path, go_quota_mode: quota_mode, stop_files: [File.join(@root, "STOP")])
+    driver = GenerationCampaign.new(path, go_quota_mode: quota_mode, stop_files: [File.join(@root, "STOP")], yield_at: @queue["yield_at"])
     driver.ensure_account_idle!
     paused = manifest.fetch("paused_campaign").fetch("path")
     raise "Fable STOP guard absent" unless File.exist?(File.join(paused, "STOP"))
@@ -130,7 +145,7 @@ class OpenCodeCampaignQueue
         "-p", "ActiveState", "-p", "SubState", "-p", "ExecMainStatus")
       unit = result.success? ? output.lines.to_h { |line| line.strip.split("=", 2) } : {}
       value["unit"] = unit
-      value["monitor_health"] = if %w[complete needs_review].include?(progress["status"])
+      value["monitor_health"] = if %w[complete needs_review quota_paused priority_paused].include?(progress["status"])
         progress["status"]
       elsif unit["ActiveState"] == "active"
         "running"

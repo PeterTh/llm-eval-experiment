@@ -39,6 +39,11 @@ module OpenCodeHarness
       "model" => "opencode-go/beam-free", "reasoning_effort" => "medium",
       "label" => "Beam 1.0 OpenCode medium", "slug" => "beam10-opencode-medium", "unit_slug" => "beam10-oc",
       "access" => "opencode-go", "free_only" => true, "definition" => "beam-free.json"
+    }.freeze,
+    "glm-5.3-oc-high" => {
+      "model" => "opencode-go/glm-5.3", "reasoning_effort" => "high",
+      "label" => "GLM 5.3 OpenCode high", "slug" => "glm53-opencode-high", "unit_slug" => "glm53-oc",
+      "access" => "opencode-go", "free_only" => false
     }.freeze
   }.freeze
   FORBIDDEN_TOOLS = %w[webfetch websearch task question plan_enter plan_exit].freeze
@@ -58,7 +63,8 @@ module OpenCodeHarness
     "opencode-go/deepseek-v4.1-flash" => 384_000,
     "opencode-go/minimax-m3.1-flash-free" => 512_000,
     "opencode-go/claude-haiku-5-5" => 128_000,
-    "opencode-go/beam-free" => 131_072
+    "opencode-go/beam-free" => 131_072,
+    "opencode-go/glm-5.3" => 131_072
   }.freeze
   class Invalid < StandardError; end
   module_function

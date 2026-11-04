@@ -120,6 +120,13 @@ source/binary bindings and full numerical witnesses for pilot failures, with no
 executables or repeated successful-result arrays. No full-array command invokes
 an LLM or records a performance measurement.
 
+To list new full-array failures and mark IDs only after reporting them in chat:
+
+```sh
+ruby tools/validation_audit/failure_notifications.rb HOME_EVIDENCE pending-full-array
+ruby tools/validation_audit/failure_notifications.rb HOME_EVIDENCE mark-full-array RUN_ID
+```
+
 ## Shape sweep concurrency
 
 Concurrency changes scheduling only. A separately authorized pilot compares

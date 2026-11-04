@@ -68,7 +68,7 @@ Primary review checked every finding and evidence claim, sampled each batch, and
 returned incomplete or incorrect evidence for correction. Raw proposals, accepted
 inputs and per-ID records are retained separately. This is not proof for all inputs
 or a substitute for numerical validation. Tolerant full-array observation has its
-own pilot gate and is not yet implemented.
+own pilot gate, described below.
 
 The static-review driver checks source/build/executable bindings and exact compiled
 excerpts before sealing completion. It never treats preparation or a progress count
@@ -119,6 +119,15 @@ pilot. `export_full_array_pilot.rb` retains compact observations, method version
 source/binary bindings and full numerical witnesses for pilot failures, with no
 executables or repeated successful-result arrays. No full-array command invokes
 an LLM or records a performance measurement.
+
+After verified completion, `export_full_array_full.rb` reuses the published pilot
+by digest and shards the new exact observations and logs into bounded JSONL files.
+Source manifests shared by a comparison and its build receipt are stored once;
+the original receipt still reconstructs byte-for-byte. Failed numerical checks
+retain deduplicated complete array witnesses. Successful arrays remain temporary.
+`verify_full_array_full_export.rb` checks coverage, provenance and execution
+integrity and replays failure comparisons offline; it does not claim to replay
+successful full-array comparisons without their intentionally omitted bulk data.
 
 To list new full-array failures and mark IDs only after reporting them in chat:
 
@@ -182,6 +191,8 @@ ruby tools/validation_audit/export.rb HOME_EVIDENCE NEW_EXPORT_DIRECTORY stencil
 ruby tools/validation_audit/export_shape_pilot.rb HOME_EVIDENCE NEW_EXPORT_DIRECTORY
 ruby tools/validation_audit/export_shape_full.rb LOCAL_WORKSPACE HOME_EVIDENCE NEW_EXPORT_DIRECTORY
 ruby tools/validation_audit/export_spmv_full.rb LOCAL_WORKSPACE HOME_EVIDENCE NEW_EXPORT_DIRECTORY PUBLISHED_SPMV_PILOT_DIRECTORY
+ruby tools/validation_audit/export_full_array_full.rb LOCAL_WORKSPACE HOME_EVIDENCE NEW_EXPORT_DIRECTORY PUBLISHED_FULL_ARRAY_PILOT_DIRECTORY
+ruby tools/validation_audit/verify_full_array_full_export.rb FULL_ARRAY_EXPORT_DIRECTORY
 ruby test/test_comparison_policy.rb
 ruby test/test_external_validation_cases.rb
 ruby test/test_validation_audit.rb
@@ -192,6 +203,8 @@ ruby test/test_validation_concurrency.rb
 ruby test/test_spmv_work_count.rb
 ruby test/test_spmv_full_review.rb
 ruby test/test_export_spmv_full.rb
+ruby test/test_export_full_array_full.rb
+ruby test/test_verify_full_array_full_export.rb
 ```
 
 Exports reproduce every comparison, bind original JSONL lines by digest where

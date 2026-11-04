@@ -87,7 +87,40 @@ acceptance metadata for delegated work. Early immutable schema-v1 records omit
 the compilation counter; verification reports that missing metadata without
 inventing values. Reported agent intervals are not a cost or throughput estimate.
 
-## Bounded concurrency
+## Full array observation
+
+The full-array tools observe unchanged executables with GDB hardware breakpoints
+and read-only memory capture. Arrays remain under the local workspace; comparisons
+retain elementwise absolute tolerance `1e-5`, or the existing Roomsim distance
+tolerance `5`. A captured array's own printed hash binds the observation to the
+output; floating-point hashes are not compared across implementations.
+
+The stratified pilot covered 120 programs across 40 benchmark/backend strata.
+The compatibility pilot checked 13 unusual output layouts, four canonical
+controls and one reference. `full_array_adapters.rb` pins reviewed vector/span
+helpers and five executable-specific sites. Unsupported or incomplete observation
+stops for review and is not a scientific exclusion. Identical rank replicas may
+be compared once without changing the benchmark output contract.
+
+`full_array_full.rb` freezes the approved scope and method, verifies and reuses
+completed comparisons, and saves immutable per-ID evidence. Its systemd launcher
+survives disconnection, never auto-restarts failed executions, and updates
+`full-array-full/state.json` approximately once a minute. The full sweep uses
+the piloted serial scheduling; the shape-only concurrency result does not establish
+safe debugger concurrency. `STOP-full-array-full` requests a checkpointed stop.
+
+```sh
+ruby tools/validation_audit/full_array_full.rb LOCAL_WORKSPACE HOME_EVIDENCE prepare
+ruby tools/validation_audit/launch_full_array.rb LOCAL_WORKSPACE HOME_EVIDENCE llm-validation-full-array-20261104
+```
+
+Launching requires an explicit user approval receipt, not merely a completed
+pilot. `export_full_array_pilot.rb` retains compact observations, method versions,
+source/binary bindings and full numerical witnesses for pilot failures, with no
+executables or repeated successful-result arrays. No full-array command invokes
+an LLM or records a performance measurement.
+
+## Shape sweep concurrency
 
 Concurrency changes scheduling only. A separately authorized pilot compares
 fresh serial controls with two and four independent copies of the same passing

@@ -60,8 +60,32 @@ SpMV work-count verification and tolerant full-array observation have separate
 pilot gates. The SpMV tool prepares a source/compiled-code inspection sample and
 records manual review evidence and an elapsed-review-time projection; it does
 not execute programs or automatically certify iteration counts. Its completed
-12-program pilot found no omission, but the full 722-program scope exceeds the
-five-hour approval threshold. Tolerant full-array observation is not implemented.
+12-program pilot found no omission. The separately authorized full static review
+is complete: all 722 eligible implementations are covered, with no new work-count
+omission identified. After a checked delegation pilot, up to three Luna reviewers
+worked in parallel; four uncertain library/JIT cases received Sol-6.1 adjudication.
+Primary review checked every finding and evidence claim, sampled each batch, and
+returned incomplete or incorrect evidence for correction. Raw proposals, accepted
+inputs and per-ID records are retained separately. This is not proof for all inputs
+or a substitute for numerical validation. Tolerant full-array observation has its
+own pilot gate and is not yet implemented.
+
+The static-review driver checks source/build/executable bindings and exact compiled
+excerpts before sealing completion. It never treats preparation or a progress count
+as a scientific verdict, and it refuses duplicate or unresolved reviews:
+
+```sh
+ruby tools/validation_audit/spmv_full_review.rb LOCAL_WORKSPACE HOME_EVIDENCE status
+ruby tools/validation_audit/spmv_full_review.rb LOCAL_WORKSPACE HOME_EVIDENCE check PROPOSAL_JSON
+ruby tools/validation_audit/spmv_full_review.rb LOCAL_WORKSPACE HOME_EVIDENCE record CHECKED_REVIEW_JSON
+ruby tools/validation_audit/spmv_full_review.rb LOCAL_WORKSPACE HOME_EVIDENCE verify
+ruby tools/validation_audit/spmv_full_review.rb LOCAL_WORKSPACE HOME_EVIDENCE finish
+```
+
+`record` requires explicit zero activity counters for new reviews and primary
+acceptance metadata for delegated work. Early immutable schema-v1 records omit
+the compilation counter; verification reports that missing metadata without
+inventing values. Reported agent intervals are not a cost or throughput estimate.
 
 ## Bounded concurrency
 
@@ -117,6 +141,7 @@ ruby tools/validation_audit/export.rb HOME_EVIDENCE NEW_EXPORT_DIRECTORY floyd
 ruby tools/validation_audit/export.rb HOME_EVIDENCE NEW_EXPORT_DIRECTORY stencil
 ruby tools/validation_audit/export_shape_pilot.rb HOME_EVIDENCE NEW_EXPORT_DIRECTORY
 ruby tools/validation_audit/export_shape_full.rb LOCAL_WORKSPACE HOME_EVIDENCE NEW_EXPORT_DIRECTORY
+ruby tools/validation_audit/export_spmv_full.rb LOCAL_WORKSPACE HOME_EVIDENCE NEW_EXPORT_DIRECTORY PUBLISHED_SPMV_PILOT_DIRECTORY
 ruby test/test_comparison_policy.rb
 ruby test/test_external_validation_cases.rb
 ruby test/test_validation_audit.rb
@@ -124,6 +149,9 @@ ruby test/test_validation_shape_full.rb
 ruby test/test_validation_shape_cases.rb
 ruby test/test_validation_shape_export.rb
 ruby test/test_validation_concurrency.rb
+ruby test/test_spmv_work_count.rb
+ruby test/test_spmv_full_review.rb
+ruby test/test_export_spmv_full.rb
 ```
 
 Exports reproduce every comparison, bind original JSONL lines by digest where
@@ -141,6 +169,11 @@ skipped checks are never presented as passes.
 
 Method snapshots retain the experiment baseline commit and per-file hashes for
 the pilot code overlay; they are not standalone copies of the entire driver.
+
+The full SpMV export requires verified completion and reuses the already-published
+pilot by digest. It retains exact accepted inputs, per-ID findings, pinned source
+references, selected compiled excerpts and raw delegated proposals. Binaries,
+copied source trees and complete disassembly dumps stay out of the export.
 
 The 2026-11-03 shape pilot retains an initial and a refined plan. The refinement
 only repeats the four Cahn/stencil MPI observations with every grid dimension

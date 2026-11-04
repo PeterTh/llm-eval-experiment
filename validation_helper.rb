@@ -1,4 +1,6 @@
 
+require_relative "lib/local_evaluation/comparison_policy"
+
 ## helper for parallelization validation
 
 # perform simple textual detection of parallelization approach
@@ -137,6 +139,11 @@ def validate(ref_output, validation_output, benchmark)
             end
         end
         ret_string += " - Object #{ref_lines[0]}: PASSED (hash match: #{hash_same})\n"
+    end
+
+    if LocalEvaluation::ComparisonPolicy.identifier(benchmark)
+        exact = LocalEvaluation::ComparisonPolicy.integer_hashes(ref_output, validation_output)
+        return exact unless exact.first
     end
 
     return [true, "Validation successful. All objects match reference output.\n#{ret_string}"]

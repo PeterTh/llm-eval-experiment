@@ -17,18 +17,22 @@ class ExternalValidationCasesTest < Minitest::Test
     File.write(File.join(@source, "unstructured.cpp"), "MPI_Init MPI_Finalize MPI_Comm_rank MPI_Comm_size\n")
     File.write(File.join(@source, "CMakeLists.txt"), "fixture\n")
     @calls = []
+    @resource_calls = []
     @extra_output = output(1024)
     owner = self
     @runner = Object.new
     @runner.define_singleton_method(:run) { |**args| owner.fake_run(**args) }
     @resources = Object.new
-    @resources.define_singleton_method(:command) { |**args| [{}, [args.fetch(:executable), *args.fetch(:args)]] }
+    @resources.define_singleton_method(:command) { |**args| owner.fake_resources(**args) }
     @pipeline = LocalEvaluation::ValidationPipeline.allocate
     @pipeline.instance_variable_set(:@manifest, @manifest)
     @pipeline.instance_variable_set(:@validation_dir, File.join(@tmp, "validation"))
     @pipeline.instance_variable_set(:@runner, @runner)
     @pipeline.instance_variable_set(:@resources, @resources)
-    @pipeline.instance_variable_set(:@supplemental_references, { Cases::UNSTRUCTURED_BOUNDARY.fetch("id") => output(1024) })
+    @pipeline.instance_variable_set(:@supplemental_references, {
+      Cases::UNSTRUCTURED_BOUNDARY.fetch("id") => output(1024),
+      LocalEvaluation::ShapeValidationCases.primary('unstructured', 'mpi').fetch('id') => output(66_049)
+    })
   end
 
   def teardown
@@ -42,13 +46,24 @@ class ExternalValidationCasesTest < Minitest::Test
   def fake_run(**args)
     @calls << args
     prefix = args.fetch(:prefix)
-    bytes = args.fetch(:argv).include?("512") ? @extra_output : output(65_536)
+    bytes = if args.fetch(:argv).include?("512")
+      @extra_output
+    elsif args.fetch(:argv).include?("513")
+      output(66_049)
+    else
+      output(65_536)
+    end
     FileUtils.mkdir_p(File.dirname(prefix))
     %w[command stdout stderr exitcode wall_time].each do |suffix|
       File.write("#{prefix}_#{suffix}.log", suffix == "stdout" ? bytes : "0\n")
     end
     LocalEvaluation::ProcessRunner::Result.new(success: true, exit_code: 0, timed_out: false, wall_seconds: 0.01,
       argv: args.fetch(:argv), output_truncated: false)
+  end
+
+  def fake_resources(**args)
+    @resource_calls << args
+    [{}, [args.fetch(:executable), *args.fetch(:args)]]
   end
 
   def validate_one
@@ -69,9 +84,18 @@ class ExternalValidationCasesTest < Minitest::Test
 
   def test_scope_keeps_original_sizes_and_other_backends
     assert_equal %w[-n 256 -i 20], LocalEvaluation::ValidationPipeline::VALIDATION_SIZES.fetch("unstructured")
-    %w[mpi hybrid].each { |backend| assert_equal [Cases::UNSTRUCTURED_BOUNDARY], Cases.cases_for("unstructured", backend) }
-    %w[omp cuda].each { |backend| assert_empty Cases.cases_for("unstructured", backend) }
-    assert_empty Cases.cases_for("stencil3d", "mpi")
+    %w[mpi hybrid].each do |backend|
+      assert_equal [Cases::UNSTRUCTURED_BOUNDARY, LocalEvaluation::ShapeValidationCases.primary('unstructured', backend)],
+        Cases.cases_for('unstructured', backend)
+    end
+    %w[omp cuda].each do |backend|
+      assert_equal LocalEvaluation::ShapeValidationCases.for_backend('unstructured', backend), Cases.cases_for('unstructured', backend)
+    end
+    %w[omp cuda mpi hybrid].each do |backend|
+      assert_equal [Cases::STENCIL_INTERIOR, *LocalEvaluation::ShapeValidationCases.for_backend('stencil3d', backend)],
+        Cases.cases_for('stencil3d', backend)
+    end
+    assert_equal LocalEvaluation::ShapeValidationCases.for_backend('matmul', 'mpi'), Cases.cases_for('matmul', 'mpi')
   end
 
   def test_numerical_failure_is_only_external_validation
@@ -99,6 +123,14 @@ class ExternalValidationCasesTest < Minitest::Test
     assert item.fetch("passed")
     assert_equal 5, item.fetch("logs").size
     assert_equal Digest::SHA256.hexdigest(output(1024)), item.fetch("reference_sha256")
+    assert_equal Cases::UNSTRUCTURED_BOUNDARY, item.fetch('definition')
+    assert_equal 3, @calls.size
+    assert_equal [:validation, :validation, :benchmark], @resource_calls.map { |entry| entry.fetch(:mode) }
+    assert_equal LocalEvaluation::ExecutionLimits::PERFORMANCE, @calls.last.fetch(:limits)
+    assert_equal 30, @calls.last.fetch(:timeout)
+    shape = metadata.fetch('supplemental_validation').fetch(1)
+    assert_equal LocalEvaluation::ShapeValidationCases.primary('unstructured', 'mpi'), shape.fetch('definition')
+    assert_equal Digest::SHA256.hexdigest(output(66_049)), shape.fetch('reference_sha256')
   end
 
   def test_reference_is_executed_once_and_reused_without_rebuilding
@@ -122,6 +154,14 @@ class ExternalValidationCasesTest < Minitest::Test
     refute Cases.assess(output(1024), output(1024).sub("Elements: 1024", "Elements: 512"), execution).first
   end
 
+  def test_supplemental_comparison_preserves_benchmark_specific_tolerances
+    execution = LocalEvaluation::ProcessRunner::Result.new(success: true, exit_code: 0, timed_out: false)
+    reference = output(1024).sub('Name: ElementEnergy', 'Name: Distance').sub('Hash:', "Sample[0]: 1\nHash:")
+    candidate = reference.sub('Sample[0]: 1', 'Sample[0]: 2')
+    assert Cases.assess(reference, candidate, execution, benchmark: 'roomsim').first
+    refute Cases.assess(reference, candidate, execution, benchmark: 'stencil3d').first
+  end
+
   def test_cached_success_requires_intact_supplemental_evidence
     result = validate_one
     id = result.id_string
@@ -140,8 +180,54 @@ class ExternalValidationCasesTest < Minitest::Test
     File.write(path, @extra_output)
     metadata_path = File.join(directory, "validation_metadata.yaml")
     metadata = LocalEvaluation.load_yaml(metadata_path)
+    unchanged = Marshal.load(Marshal.dump(metadata))
+    metadata.fetch('supplemental_validation').last.fetch('definition')['topology'] = 'validation'
+    LocalEvaluation.atomic_yaml(metadata_path, metadata)
+    refute @pipeline.send(:validation_artifacts_intact?, id, info, result)
     metadata.delete("supplemental_validation")
     LocalEvaluation.atomic_yaml(metadata_path, metadata)
     refute @pipeline.send(:validation_artifacts_intact?, id, info, result)
+
+    # Enabling the extra cases must not silently retry already-failed legacy
+    # validations that did not yet bind the full definition.
+    result.output_comparison = false
+    unchanged.fetch('stages')['output_comparison'] = false
+    unchanged['supplemental_validation'] = unchanged.fetch('supplemental_validation').take(1)
+    unchanged.fetch('supplemental_validation').each do |entry|
+      entry.delete('definition')
+      entry['passed'] = false
+    end
+    LocalEvaluation.atomic_yaml(metadata_path, unchanged)
+    assert @pipeline.send(:validation_artifacts_intact?, id, info, result)
+  end
+
+  def test_invalid_topology_is_rejected_and_all_shape_cases_use_piloted_limits
+    assert_raises(ArgumentError) { Cases.resource_mode('topology' => 'unexpected') }
+    assert_equal :validation, Cases.resource_mode(Cases::STENCIL_INTERIOR)
+    LocalEvaluation::ShapeValidationCases.definitions.each_value do |definition|
+      assert_equal :benchmark, Cases.resource_mode(definition)
+      assert_equal LocalEvaluation::ExecutionLimits::PERFORMANCE, Cases.execution_limits(definition)
+    end
+  end
+
+  def test_shape_resources_are_the_measured_allocation_without_running_programs
+    resources = LocalEvaluation::Resources.new(wrapper_path: '/wrapper.rb')
+    %w[omp cuda mpi hybrid].each do |backend|
+      definition = LocalEvaluation::ShapeValidationCases.primary('matmul', backend)
+      mode = Cases.resource_mode(definition)
+      environment, command = resources.command(par_type: backend, executable: '/program', args: definition.fetch('args'), mode: mode)
+      case backend
+      when 'omp'
+        assert_equal '128', environment.fetch('OMP_NUM_THREADS')
+      when 'mpi'
+        assert_equal '128', command.fetch(command.index('--np') + 1)
+      when 'hybrid'
+        assert_equal '32', environment.fetch('OMP_NUM_THREADS')
+        assert_equal '4', command.fetch(command.index('--np') + 1)
+        assert_equal '0,1,2,3', environment.fetch('CUDA_VISIBLE_DEVICES')
+      when 'cuda'
+        assert_equal '0', environment.fetch('CUDA_VISIBLE_DEVICES')
+      end
+    end
   end
 end

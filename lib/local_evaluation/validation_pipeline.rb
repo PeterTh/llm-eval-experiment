@@ -40,7 +40,8 @@ module LocalEvaluation
                                             args: validation_args(info["benchmark"]), mode: :validation)
           puts "#{id}: timeout=#{VALIDATION_TIMEOUT}s env=#{env.inspect} command=#{Shellwords.join(command)}"
           ExternalValidationCases.cases_for(info.fetch("benchmark"), info.fetch("par_type")).each do |definition|
-            puts "#{id}: supplemental external comparison #{definition.fetch('id')} args=#{Shellwords.join(definition.fetch('args'))}"
+            mode = ExternalValidationCases.resource_mode(definition)
+            puts "#{id}: supplemental external comparison #{definition.fetch('id')} args=#{Shellwords.join(definition.fetch('args'))} topology=#{mode} timeout=#{definition.fetch('timeout', VALIDATION_TIMEOUT)}s"
           end
         end
         return
@@ -118,6 +119,8 @@ module LocalEvaluation
         "manifest_sha256" => LocalEvaluation.sha256_file(@manifest.path)
       }
       return false unless expected_identity.all? { |key, value| metadata[key] == value }
+      comparison_policy = ComparisonPolicy.identifier(info.fetch("benchmark"))
+      return false if result.output_comparison && comparison_policy && metadata["comparison_policy"] != comparison_policy
       return false unless result.is_for(info.fetch("benchmark"), info.fetch("model"),
                                         info.fetch("par_type"), info.fetch("run"))
 
@@ -148,6 +151,11 @@ module LocalEvaluation
       supplemental.each do |entry|
         definition = expected_cases.find { |candidate| candidate.fetch("id") == entry.fetch("id") }
         return false unless definition && entry.fetch("args") == definition.fetch("args")
+        # Previously failed validations remain failures. Successful cached
+        # results must bind the full case, including resource topology.
+        if result.output_comparison || entry.key?('definition')
+          return false unless entry['definition'] == definition
+        end
         expected_logs = %w[command stdout stderr exitcode wall_time].map { |suffix| "validation_out_#{entry.fetch('id')}_#{suffix}.log" }
         return false unless entry.fetch("logs").keys.sort == expected_logs.sort
         return false unless entry.fetch("logs").all? do |name, digest|
@@ -261,9 +269,11 @@ module LocalEvaluation
         supplemental_execution, supplemental_output = ExternalValidationCases.run(
           executable: executable, definition: definition, par_type: par_type, prefix: prefix,
           runner: @runner, resources: @resources, timeout: VALIDATION_TIMEOUT)
-        extra_comparison = ExternalValidationCases.assess(supplemental_reference, supplemental_output, supplemental_execution)
+        extra_comparison = ExternalValidationCases.assess(supplemental_reference, supplemental_output, supplemental_execution,
+          benchmark: definition.fetch("benchmark"))
         @supplemental_case_results << {
-          "id" => case_id, "args" => definition.fetch("args"), "passed" => extra_comparison.first,
+          "id" => case_id, "args" => definition.fetch("args"), "definition" => definition,
+          "passed" => extra_comparison.first,
           "comparison" => extra_comparison.last, "execution" => supplemental_execution.to_h.transform_keys(&:to_s),
           "reference_sha256" => Digest::SHA256.hexdigest(supplemental_reference),
           "logs" => ExternalValidationCases.log_digests(prefix)
@@ -308,6 +318,7 @@ module LocalEvaluation
           "output_comparison" => !!result.output_comparison
         },
         "supplemental_validation" => @supplemental_case_results || [],
+        "comparison_policy" => ComparisonPolicy.identifier(result.benchmark),
         "completed_at" => Time.now.iso8601
       })
       result
@@ -330,6 +341,7 @@ module LocalEvaluation
       executable = BuildSupport.find_executable(File.join(@validation_dir, "reference", benchmark), benchmark)
       expected = {
         "id" => definition.fetch("id"), "validation_args" => definition.fetch("args"),
+        "definition" => definition,
         "source_revision_sha256" => Digest::SHA256.hexdigest(YAML.dump(@manifest.data.fetch("benchmark_repository"))),
         "executable_sha256" => LocalEvaluation.sha256_file(executable)
       }

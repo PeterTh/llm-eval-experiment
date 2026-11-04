@@ -143,6 +143,11 @@ ruby tools/validation_audit/failure_notifications.rb HOME_EVIDENCE pending-full-
 ruby tools/validation_audit/failure_notifications.rb HOME_EVIDENCE mark-full-array RUN_ID
 ```
 
+`watch_full_array.rb HOME_EVIDENCE` is a read-only Linux file-event watcher for an
+active monitoring session. It emits new failures and terminal/stale states promptly,
+with routine progress only hourly by default. It never starts a model or restarts
+the sweep. An optional second argument changes the progress interval in seconds.
+
 ## Shape sweep concurrency
 
 Concurrency changes scheduling only. A separately authorized pilot compares

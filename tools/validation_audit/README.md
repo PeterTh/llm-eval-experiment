@@ -129,6 +129,13 @@ retain deduplicated complete array witnesses. Successful arrays remain temporary
 integrity and replays failure comparisons offline; it does not claim to replay
 successful full-array comparisons without their intentionally omitted bulk data.
 
+The isolated `full_array_hash_compatibility.rb` adapter handles the single reviewed
+Qwen Black-Scholes helper that merely adds an already-included MPI header. It pins
+both helper blobs, verifies the exact source difference, and configures the digest
+guard for that observation only. Its code and effective configuration are retained
+alongside the observation. It neither changes the frozen sweep files nor relaxes
+the numerical comparison; completed observations are never repeated.
+
 To list new full-array failures and mark IDs only after reporting them in chat:
 
 ```sh

@@ -38,7 +38,8 @@ class FullArrayFullVerificationTest < Minitest::Test
     left = object([1.0, 2.0], 'reference_roomsim')
     right = object([1.0, failed ? 25.5 : 2.00001], id)
     group = { 'benchmark' => 'roomsim', 'backend' => 'omp', 'args' => %w[-v -o -n 2] }
-    source = { 'id' => id, 'benchmark' => 'roomsim', 'backend' => 'omp', 'source_files' => { 'file' => { 'sha256' => 'a' * 64 } } }
+    source = { 'id' => id, 'benchmark' => 'roomsim', 'backend' => 'omp',
+      'source_files' => { 'common/hash.hpp' => { 'sha256' => Capture::HASH_SHA } } }
     binding = { 'id' => id, 'source_files' => source.fetch('source_files'), 'binary_sha256' => 'b' * 64 }
     ref_obs = { 'id' => 'reference_roomsim', 'objects' => [left] }
     reference = { 'observation' => ref_obs, 'observation_sha256' => Export.json_digest(ref_obs), 'stdout' => output(left) }

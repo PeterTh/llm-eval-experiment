@@ -99,6 +99,11 @@ module ValidationAudit
         'log_sha256' => logs.transform_values { |bytes| Digest::SHA256.hexdigest(bytes) } }
       review_path = File.join(directory, 'capture-reconciliation.json')
       value['capture_reconciliation'] = ValidationAudit.read(review_path) if File.exist?(review_path)
+      adapter_path = File.join(directory, 'observation-adapter.json')
+      if File.exist?(adapter_path)
+        value['observation_adapter'] = ValidationAudit.read(adapter_path)
+        value['observation_adapter_sha256'] = ValidationAudit.sha(adapter_path)
+      end
       unless comparison.fetch('passed')
         normalized, = verifier.normalized_observation(observation, logs.fetch('stdout'))
         reference, = verifier.reference_for(row.fetch('benchmark'))
@@ -168,7 +173,7 @@ module ValidationAudit
       ValidationAudit.save(File.join(destination, 'reused.json'), reused)
       %w[plan.json completion.json].each { |name| FileUtils.cp(File.join(root, name), File.join(destination, name)) }
       FileUtils.cp(File.join(evidence, FullArrayFull::AUTHORIZATION), File.join(destination, 'authorization.json'))
-      %w[attempts failure-events].each do |name|
+      %w[attempts failure-events observer-adapters].each do |name|
         path = File.join(root, name)
         FileUtils.cp_r(path, File.join(destination, name)) if File.directory?(path)
       end

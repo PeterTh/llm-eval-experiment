@@ -84,6 +84,36 @@ module ValidationAudit
       benchmark == 'roomsim' && reference.fetch('name').include?('Distance') ? 5.0 : 1e-5
     end
 
+    def verify_helper!(record, root)
+      source = record.fetch('comparison').fetch('source')
+      helper = source.fetch('source_files').fetch('common/hash.hpp')
+      if helper.fetch('sha256') == FullArrayCapture::HASH_SHA
+        raise 'Unnecessary observation adapter' if record.key?('observation_adapter')
+        return
+      end
+      adapter = record.fetch('observation_adapter')
+      method = safe_path(root, adapter.fetch('adapter_method'))
+      unless record.fetch('id') == 'black-scholes_qwen-3.6-27B-udq4_hybrid_r2' &&
+          helper.fetch('sha256') == '59016cf476cc217af79d9271396b24fd4167cf045f0231107590b0155849fe8e' &&
+          helper.fetch('git_blob') == 'ad6b15ea7a7e60c44e77d0600c46475c9c4941dd' &&
+          adapter.fetch('schema_version') == 1 && adapter.fetch('id') == record.fetch('id') &&
+          adapter.fetch('kind') == 'redundant-mpi-header-hash-helper' &&
+          adapter.fetch('base_helper_sha256') == FullArrayCapture::HASH_SHA &&
+          adapter.fetch('base_helper_git_blob') == '42ad06602e366caf62be9789dcae2d52fd0c2845' &&
+          adapter.fetch('accepted_helper_sha256') == helper.fetch('sha256') &&
+          adapter.fetch('accepted_helper_git_blob') == helper.fetch('git_blob') &&
+          adapter.fetch('source_commit') == source.fetch('source_commit') && adapter.fetch('source_files') == source.fetch('source_files') &&
+          adapter.fetch('effective_configuration') == { 'FullArrayCapture::HASH_SHA' => helper.fetch('sha256') } &&
+          adapter.fetch('observation_sha256') == record.fetch('comparison').fetch('observation_sha256') &&
+          adapter.fetch('observation_complete') == record.fetch('observation').fetch('observation_complete') &&
+          adapter.fetch('program_executions') == 1 &&
+          %w[frozen_method_files_changed program_source_changes executable_file_changes benchmark_runs llm_invocations].all? { |key| adapter.fetch(key).zero? } &&
+          FullArrayFullExport.json_digest(adapter) == record.fetch('observation_adapter_sha256') &&
+          ValidationAudit.sha(method) == adapter.fetch('adapter_method_sha256')
+        raise 'Unreviewed or mismatched hash-helper compatibility adapter'
+      end
+    end
+
     def verify_record!(record, reference, group, root, expected_method: nil)
       id, comparison, observation, logs = record.values_at('id', 'comparison', 'observation', 'logs')
       source = comparison.fetch('source')
@@ -108,6 +138,7 @@ module ValidationAudit
           FullArrayFullExport.json_digest(binding) == observation.fetch('binding_sha256')
         raise 'Full-array executable/source binding differs'
       end
+      verify_helper!(record, root)
       execution = observation.fetch('execution')
       unless execution.fetch('success') && execution.fetch('exit_code') == 0 && !execution.fetch('timed_out') &&
           !execution.fetch('output_truncated') && logs.fetch('exitcode').strip == '0' &&

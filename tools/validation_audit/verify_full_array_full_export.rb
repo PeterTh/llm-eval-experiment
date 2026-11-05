@@ -48,18 +48,19 @@ module ValidationAudit
       end
       review = record.fetch('capture_reconciliation')
       raise 'Reconciliation digest differs' unless FullArrayOffline.json_digest(review) == record.fetch('comparison').fetch('observation_reconciliation_sha256')
-      if review['kind'] == FullArrayOffline::SUPPRESSED_KIND
-        suppression = record.fetch('suppressed_output_review')
+      if [FullArrayOffline::SUPPRESSED_KIND, FullArrayOffline::ROOT_OUTPUT_KIND].include?(review['kind'])
+        review_key = review['kind'] == FullArrayOffline::SUPPRESSED_KIND ? 'suppressed_output_review' : 'root_output_review'
+        suppression = record.fetch(review_key)
         selected = suppression.fetch('selected_objects')
         matches = objects.select { |object| key.call(object) == printed.first }
         unless !observation.fetch('observation_complete') &&
             observation.fetch('errors') == ['Captured arrays do not match all printed result objects'] &&
             printed.size == 1 && matches.size == 1 && selected == matches && selected.first.fetch('rank') == 'rank-0' &&
             selected == review.fetch('selected_objects') &&
-            FullArrayOffline.json_digest(suppression) == record.fetch('suppressed_output_review_sha256') &&
-            record.fetch('suppressed_output_review_sha256') == review.fetch('suppressed_output_review_sha256') &&
+            FullArrayOffline.json_digest(suppression) == record.fetch(review_key + '_sha256') &&
+            record.fetch(review_key + '_sha256') == review.fetch(review_key + '_sha256') &&
             suppression.fetch('original_observation_sha256') == record.fetch('comparison').fetch('observation_sha256') &&
-            suppression.fetch('id') == record.fetch('id') && suppression.fetch('kind') == FullArrayOffline::SUPPRESSED_KIND
+            suppression.fetch('id') == record.fetch('id') && suppression.fetch('kind') == review.fetch('kind')
           raise 'Suppressed partial captures are not bound to the unique printed root result'
         end
         return selected
@@ -293,6 +294,7 @@ module ValidationAudit
       end
       verify_primary_review!(record, reference, root)
       verify_suppressed_review!(record, reference, root)
+      verify_root_review!(record, reference, root)
       true
     end
 
@@ -314,6 +316,39 @@ module ValidationAudit
           %w[program_runs benchmark_runs llm_invocations program_source_changes].all? { |key| review.fetch(key).zero? }
         raise 'Suppressed-output review source or method differs'
       end
+      verify_root_witnesses!(record, reference, root, review)
+    end
+
+    def verify_root_review!(record, reference, root)
+      return unless record.key?('root_output_review')
+      review = record.fetch('root_output_review')
+      profile = review.fetch('profile')
+      source = record.fetch('comparison').fetch('source')
+      observation = record.fetch('observation')
+      ranks = %w[rank-0 rank-1 rank-2 rank-3]
+      unless review.fetch('schema_version') == 1 && profile.fetch('schema_version') == 1 &&
+          %w[id benchmark backend source_commit source_path].all? { |key| profile.fetch(key) == source.fetch(key) } &&
+          %w[mpi hybrid].include?(profile.fetch('backend')) && profile.fetch('printed_rank') == 'rank-0' &&
+          profile.fetch('captured_ranks') == ranks &&
+          profile.fetch('source_file') == source.fetch('source_files').fetch(profile.fetch('source_file_path')) &&
+          !profile.fetch('source_finding').strip.empty? && !profile.fetch('array_name').empty? &&
+          profile.fetch('elements').is_a?(Integer) && profile.fetch('elements').positive? &&
+          review.fetch('profile_sha256') == FullArrayOffline.json_digest(profile) &&
+          review.fetch('stdout_sha256') == observation.fetch('stdout_sha256') &&
+          review.fetch('extension_method_sha256') == record.fetch('capture_reconciliation').fetch('extension_method_sha256') &&
+          FullArrayOffline.sha(safe_path(root, review.fetch('extension_method'))) == review.fetch('extension_method_sha256') &&
+          review.fetch('captured_objects') == 4 &&
+          observation.fetch('objects').map { |object| object.fetch('rank') }.sort == ranks &&
+          observation.fetch('objects').all? { |object| object.fetch('name') == profile.fetch('array_name') && object.fetch('elements') == profile.fetch('elements') } &&
+          %w[program_runs benchmark_runs llm_invocations program_source_changes].all? { |key| review.fetch(key).zero? }
+        raise 'Root-output review source, profile or method differs'
+      end
+      verify_root_witnesses!(record, reference, root, review)
+    end
+
+    def verify_root_witnesses!(record, reference, root, review)
+      source = record.fetch('comparison').fetch('source')
+      observation = record.fetch('observation')
       objects = observation.fetch('objects')
       unless record.fetch('reviewed_replica_arrays').keys.sort == objects.map { |object| object.fetch('sha256') }.uniq.sort
         raise 'Suppressed capture witness coverage differs'
@@ -425,7 +460,7 @@ module ValidationAudit
           id = record.fetch('id')
           raise 'Duplicate full-array comparison' if accepted.key?(id)
           group = groups.fetch(id)
-          %w[primary_output_review suppressed_output_review].each do |name|
+          %w[primary_output_review suppressed_output_review root_output_review].each do |name|
             next unless record.key?(name)
             raise 'Output review plan binding differs' unless record.fetch(name).fetch('plan_sha256') == completion.fetch('plan_sha256')
           end

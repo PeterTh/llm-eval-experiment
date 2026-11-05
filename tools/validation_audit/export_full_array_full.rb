@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 require_relative 'export_full_array_pilot'
-require_relative 'full_array_suppressed_outputs'
+require_relative 'full_array_root_output_reviews'
 require_relative 'full_array_eligibility'
 
 module ValidationAudit
@@ -114,10 +114,12 @@ module ValidationAudit
           [object.fetch('sha256'), FullArrayPilotExport.witness(object, destination)]
         end
       end
-      suppressed_review_path = File.join(directory, 'suppressed-output-review.json')
-      if File.exist?(suppressed_review_path)
-        value['suppressed_output_review'] = ValidationAudit.read(suppressed_review_path)
-        value['suppressed_output_review_sha256'] = ValidationAudit.sha(suppressed_review_path)
+      %w[suppressed-output-review root-output-review].each do |name|
+        path = File.join(directory, name + '.json')
+        next unless File.exist?(path)
+        key = name.tr('-', '_')
+        value[key] = ValidationAudit.read(path)
+        value[key + '_sha256'] = ValidationAudit.sha(path)
         value['reviewed_replica_arrays'] = observation.fetch('objects').to_h do |object|
           [object.fetch('sha256'), FullArrayPilotExport.witness(object, destination)]
         end
@@ -241,7 +243,7 @@ module ValidationAudit
       Dir[File.join(root, 'launch-*.json')].sort.each do |path|
         receipt = ValidationAudit.read(path)
         source_name = receipt['launcher_name'] || (receipt.key?('extension_method_sha256') ? 'launch_full_array_reviewed.rb' : 'launch_full_array.rb')
-        unless %w[launch_full_array.rb launch_full_array_reviewed.rb launch_full_array_suppressed.rb].include?(source_name)
+        unless %w[launch_full_array.rb launch_full_array_reviewed.rb launch_full_array_suppressed.rb launch_full_array_root_outputs.rb].include?(source_name)
           raise 'Unknown historical sweep launcher'
         end
         source = File.join(__dir__, source_name)

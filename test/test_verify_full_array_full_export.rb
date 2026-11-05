@@ -156,4 +156,66 @@ class FullArrayFullVerificationTest < Minitest::Test
     record['observation_adapter_sha256'] = Export.json_digest(adapter)
     assert_raises(RuntimeError) { Verify.verify_helper!(record, @root) }
   end
+
+  def root_review_fixture
+    record, reference, group = fixture
+    group['backend'] = 'mpi'
+    source = record.fetch('comparison').fetch('source')
+    source.merge!('backend' => 'mpi', 'source_commit' => 'c' * 40, 'source_path' => 'fixture/source')
+    source.fetch('source_files')['roomsim/roomsim.cpp'] = { 'sha256' => 'd' * 64, 'git_blob' => 'e' * 40 }
+    observation = record.fetch('observation')
+    objects = [observation.fetch('objects').first, *(1..3).map { |i| object([0.0, i.to_f], "partial-#{i}") }]
+    objects.each_with_index { |obj, i| obj['rank'] = "rank-#{i}" }
+    observation.merge!('backend' => 'mpi', 'objects' => objects, 'observation_complete' => false,
+      'errors' => ['Captured arrays do not match all printed result objects'])
+    observation['capture_reports'] = objects.map do |obj|
+      { 'rank' => obj.fetch('rank'), 'errors' => [], 'exit_codes' => [0],
+        'local_directory' => File.dirname(obj.fetch('local_path')),
+        'captures' => [obj.reject { |key, _| %w[rank local_path fnv1a64].include?(key) }] }
+    end
+    observation['binding_sha256'] = Export.json_digest(Export.expand_binding(record.fetch('binding'), source))
+    profile = source.slice('id', 'benchmark', 'backend', 'source_commit', 'source_path').merge(
+      'schema_version' => 1, 'source_file_path' => 'roomsim/roomsim.cpp',
+      'source_file' => source.fetch('source_files').fetch('roomsim/roomsim.cpp'),
+      'source_finding' => 'Fixture gathers to root and suppresses non-root stdout.',
+      'printed_rank' => 'rank-0', 'captured_ranks' => %w[rank-0 rank-1 rank-2 rank-3],
+      'array_name' => 'Distances', 'elements' => 2)
+    path = 'observer-extensions/root-review.rb'
+    FileUtils.mkdir_p(File.dirname(File.join(@root, path)))
+    File.write(File.join(@root, path), '# source-bound review fixture')
+    review = { 'schema_version' => 1, 'kind' => ValidationAudit::FullArrayOffline::ROOT_OUTPUT_KIND,
+      'id' => record.fetch('id'), 'profile' => profile, 'profile_sha256' => Export.json_digest(profile),
+      'original_observation_sha256' => Export.json_digest(observation), 'stdout_sha256' => observation.fetch('stdout_sha256'),
+      'selected_objects' => [objects.first], 'captured_objects' => 4,
+      'extension_method' => path, 'extension_method_sha256' => ValidationAudit.sha(File.join(@root, path)) }
+    %w[program_runs benchmark_runs llm_invocations program_source_changes].each { |key| review[key] = 0 }
+    record['root_output_review'] = review
+    record['root_output_review_sha256'] = Export.json_digest(review)
+    record['capture_reconciliation'] = review.slice('kind', 'selected_objects', 'captured_objects', 'extension_method_sha256')
+      .merge('root_output_review_sha256' => record.fetch('root_output_review_sha256'))
+    record.fetch('comparison')['observation_reconciliation_sha256'] = Export.json_digest(record.fetch('capture_reconciliation'))
+    record['reviewed_replica_arrays'] = objects.to_h { |obj| [obj.fetch('sha256'), ValidationAudit::FullArrayPilotExport.witness(obj, @root)] }
+    record['review_reference_arrays'] = reference.fetch('observation').fetch('objects').to_h do |obj|
+      [obj.fetch('name'), ValidationAudit::FullArrayPilotExport.witness(obj, @root)]
+    end
+    resign(record)
+    [record, reference, group]
+  end
+
+  def test_source_bound_root_review_replays_all_captures_and_only_compares_printed_root
+    record, reference, group = root_review_fixture
+    assert Verify.verify_record!(record, reference, group, @root)
+    record.fetch('root_output_review').fetch('profile')['elements'] = 3
+    assert_raises(RuntimeError) { Verify.verify_root_review!(record, reference, @root) }
+  end
+
+  def test_unprinted_capture_is_retained_and_checked
+    record, reference, group = root_review_fixture
+    partial = record.fetch('observation').fetch('objects').last
+    path = File.join(@root, record.fetch('reviewed_replica_arrays').fetch(partial.fetch('sha256')))
+    data = JSON.parse(File.read(path))
+    data['values_hex'] = [1.0, 2.0].pack('E*').unpack1('H*')
+    File.write(path, JSON.generate(data))
+    assert_raises(RuntimeError) { Verify.verify_record!(record, reference, group, @root) }
+  end
 end

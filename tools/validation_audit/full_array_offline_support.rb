@@ -21,6 +21,7 @@ module ValidationAudit
     REVIEW_KIND = 'first-printed-complete-result'
     SUPPRESSED_ID = 'roomsim_claude-opus-5.5-cc-medium_mpi_r3'
     SUPPRESSED_KIND = 'root-gather-with-suppressed-partial-captures'
+    ROOT_OUTPUT_KIND = 'source-reviewed-root-output'
     SHARD_BYTES = 8 * 1024 * 1024
     module_function
 

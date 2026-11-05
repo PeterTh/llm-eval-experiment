@@ -353,6 +353,7 @@ module ValidationAudit
       pilot_receipt, pilot_records = FullArrayOffline.checked_pilot(pilot)
       FullArrayPilotVerification.run(pilot, quiet: quiet)
       plan = FullArrayOffline.read(File.join(root, 'plan.json'))
+      FullArrayOffline.check_pilot_scope!(plan, FullArrayOffline.read(File.join(pilot, 'full-array-pilot-01', 'plan.json')))
       completion = FullArrayOffline.read(File.join(root, 'completion.json'))
       ids = FullArrayOffline.check_completion!(plan, completion, FullArrayOffline.sha(File.join(root, 'plan.json')))
       approval = FullArrayOffline.read(File.join(root, 'authorization.json'))
@@ -388,12 +389,17 @@ module ValidationAudit
         entry = pilot_records.fetch([binding.fetch('phase'), id])
         record = entry.fetch('record')
         original = plan.fetch('reused').fetch(id)
+        group = groups.fetch(id)
         unless binding.fetch('line') == entry.fetch('line') && binding.fetch('line_sha256') == entry.fetch('line_sha256') &&
             binding.fetch('phase') == File.dirname(original.fetch('directory')) &&
             binding.fetch('comparison_sha256') == record.fetch('comparison_sha256') &&
             record.fetch('comparison_sha256') == original.fetch('comparison_sha256') &&
             FullArrayOffline.json_digest(record.fetch('observation')) == original.fetch('observation_sha256') &&
-            binding.fetch('passed') == record.dig('comparison', 'passed')
+            binding.fetch('passed') == record.dig('comparison', 'passed') && record.fetch('id') == id &&
+            record.dig('comparison', 'source', 'id') == id && record.dig('observation', 'id') == id &&
+            record.dig('comparison', 'source', 'benchmark') == group.fetch('benchmark') &&
+            record.dig('comparison', 'source', 'backend') == group.fetch('backend') &&
+            record.dig('observation', 'args') == group.fetch('args')
           raise 'Reused pilot comparison differs'
         end
         [id, record]

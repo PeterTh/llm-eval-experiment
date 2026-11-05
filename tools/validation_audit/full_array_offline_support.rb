@@ -120,6 +120,13 @@ module ValidationAudit
       [receipt, records]
     end
 
+    def check_pilot_scope!(plan, pilot_plan)
+      groups = pilot_plan.fetch('groups').map { |group| group.reject { |key, _| key == 'pilot_rows' } }
+      unless plan.fetch('population') == pilot_plan.fetch('population') && plan.fetch('groups') == groups
+        raise 'Full sweep does not cover the approved pilot population and workloads'
+      end
+    end
+
     def check_authorization!(approval, pilot_digest, completion_digest, population)
       raise 'Full-array authorization differs from the approved scope' unless
         approval.fetch('source') == 'user' && approval.fetch('approved') == true &&

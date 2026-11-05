@@ -18,6 +18,9 @@ class ExternalValidationCasesTest < Minitest::Test
     File.write(File.join(@source, "CMakeLists.txt"), "fixture\n")
     @calls = []
     @resource_calls = []
+    @full_array_calls = []
+    @full_array_passed = true
+    @full_array_error = nil
     @extra_output = output(1024)
     owner = self
     @runner = Object.new
@@ -33,6 +36,21 @@ class ExternalValidationCasesTest < Minitest::Test
       Cases::UNSTRUCTURED_BOUNDARY.fetch("id") => output(1024),
       LocalEvaluation::ShapeValidationCases.primary('unstructured', 'mpi').fetch('id') => output(66_049)
     })
+    @pipeline.define_singleton_method(:full_array_validation) { |*args| owner.fake_full_array(*args) }
+    @pipeline.define_singleton_method(:full_array_artifacts_intact?) do |_directory, entry, **identity|
+      entry && entry == owner.full_array_entry && entry.fetch('passed') == identity.fetch(:passed)
+    end
+  end
+
+  attr_reader :full_array_entry
+
+  def fake_full_array(id, info, executable, directory)
+    @full_array_calls << [id, info, executable, directory]
+    raise @full_array_error if @full_array_error
+    @full_array_entry = { 'definition' => ValidationAudit::NativeFullArray.definition(info.fetch('benchmark')),
+      'passed' => @full_array_passed, 'arrays' => @full_array_passed ? [] : [
+        { 'name' => 'ElementEnergy', 'mismatches' => 1, 'elements' => 1089, 'absolute_tolerance' => 1e-5, 'maximum_absolute_error' => 1.0 }],
+      'sparse_comparison' => [true, 'Summary comparison passed.'] }
   end
 
   def teardown
@@ -131,6 +149,29 @@ class ExternalValidationCasesTest < Minitest::Test
     shape = metadata.fetch('supplemental_validation').fetch(1)
     assert_equal LocalEvaluation::ShapeValidationCases.primary('unstructured', 'mpi'), shape.fetch('definition')
     assert_equal Digest::SHA256.hexdigest(output(66_049)), shape.fetch('reference_sha256')
+    assert_equal 1, @full_array_calls.size
+    assert_equal @full_array_entry, metadata.fetch('full_array_validation')
+  end
+
+  def test_full_array_failure_uses_the_existing_external_validation_stage
+    @full_array_passed = false
+    result = validate_one
+    assert result.basic_para
+    assert result.validation_build
+    assert result.validation_run
+    assert result.internal_validation
+    refute result.output_comparison
+    assert_match(/Output comparison FAILED \(full-array-unstructured-v1\)/, result.err_string)
+    assert_match(/1\/1089 values/, result.err_string)
+    assert_equal 1, @full_array_calls.size
+  end
+
+  def test_full_array_observer_gap_does_not_become_a_program_failure
+    @full_array_error = LocalEvaluation::InfrastructureError.new('Unreviewed result boundary')
+    assert_raises(LocalEvaluation::InfrastructureError) { validate_one }
+    directory = File.join(@tmp, 'validation/unstructured_model_mpi_r1')
+    assert File.file?(File.join(directory, 'infrastructure_error.log'))
+    refute File.exist?(File.join(directory, 'validation_metadata.yaml'))
   end
 
   def test_reference_is_executed_once_and_reused_without_rebuilding
@@ -181,6 +222,10 @@ class ExternalValidationCasesTest < Minitest::Test
     metadata_path = File.join(directory, "validation_metadata.yaml")
     metadata = LocalEvaluation.load_yaml(metadata_path)
     unchanged = Marshal.load(Marshal.dump(metadata))
+    without_full_array = Marshal.load(Marshal.dump(metadata))
+    without_full_array.delete('full_array_validation')
+    LocalEvaluation.atomic_yaml(metadata_path, without_full_array)
+    refute @pipeline.send(:validation_artifacts_intact?, id, info, result)
     metadata.fetch('supplemental_validation').last.fetch('definition')['topology'] = 'validation'
     LocalEvaluation.atomic_yaml(metadata_path, metadata)
     refute @pipeline.send(:validation_artifacts_intact?, id, info, result)
@@ -192,6 +237,7 @@ class ExternalValidationCasesTest < Minitest::Test
     # validations that did not yet bind the full definition.
     result.output_comparison = false
     unchanged.fetch('stages')['output_comparison'] = false
+    unchanged.delete('full_array_validation')
     unchanged['supplemental_validation'] = unchanged.fetch('supplemental_validation').take(1)
     unchanged.fetch('supplemental_validation').each do |entry|
       entry.delete('definition')

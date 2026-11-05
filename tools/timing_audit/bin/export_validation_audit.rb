@@ -49,6 +49,12 @@ module ValidationAuditExport
       retained_logs = logs.keys.select do |name|
         name.start_with?("validation_out_") || !result.validation_build || name.end_with?("_command.log", "_wall_time.log", "_exitcode.log")
       end.to_h { |name| [name, File.read(File.join(directory, name))] }
+      if (entry = metadata['full_array_validation'])
+        ValidationAudit::NativeFullArray.export_files(directory, entry,
+          benchmark: info.fetch('benchmark'), id: id, passed: !!result.output_comparison).each do |source, name|
+          copy.call(source, "validation/full-array/#{id}/#{name}")
+        end
+      end
       { "id" => id, "source_batch" => info.fetch("batch"), "source_commit" => manifest.data.dig("experiment_repository", "commit"),
         "metadata" => metadata, "result" => File.read(File.join(directory, "validation_result.txt")),
         "source_staging" => File.file?(File.join(directory, "source_staging.yaml")) ? LocalEvaluation.load_yaml(File.join(directory, "source_staging.yaml")) : nil,

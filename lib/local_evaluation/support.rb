@@ -162,6 +162,11 @@ module LocalEvaluation
       local_gpu_rank_wrapper.rb validation_class.rb validation_helper.rb lib/codex_usage.rb
       lib/claude_generation_recovery.rb lib/experiment_selection.rb
       lib/opencode_generation_observation.rb lib/opencode_harness.rb
+      tools/validation_audit/native_full_array_validation.rb
+      tools/validation_audit/full_array_capture.rb tools/validation_audit/full_array_rank.rb
+      tools/validation_audit/full_array_observer.py tools/validation_audit/full_array_adapters.rb
+      tools/validation_audit/full_array_reconcile.rb tools/validation_audit/runner.rb
+      tools/validation_audit/inventory.rb
     ]
     files = (fixed + ["lib/local_evaluation.rb"] +
              Dir[File.join(root, "lib", "local_evaluation", "**", "*.rb")].map { |path| path.delete_prefix("#{root}/") })

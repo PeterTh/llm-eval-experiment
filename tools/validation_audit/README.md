@@ -144,8 +144,32 @@ extension is separately pinned without editing the frozen base method. Unknown
 ambiguities still stop. Resume a sweep containing this review with:
 
 ```sh
-ruby tools/validation_audit/launch_full_array_reviewed.rb LOCAL_WORKSPACE HOME_EVIDENCE llm-validation-full-array-20261104
+ruby tools/validation_audit/launch_full_array_recovered.rb LOCAL_WORKSPACE HOME_EVIDENCE llm-validation-full-array-20261104
 ```
+
+That launcher also loads the source-bound root-gather reviews and the separately
+confirmed SpMV execution failure. Root-gather reviews select the unique printed
+root array only after inspecting the exact source; unprinted partial rank arrays
+are retained, not misclassified as complete results. Selection never depends on
+which rank passes the numerical comparison.
+
+The GPT-4.1 SpMV MPI r4 case aborts in `MPI_Gather` for the approved four-rank
+input. An unchanged, unwrapped correctness diagnostic reproduced the same
+truncation. Its explicit review binds the source, executable and both executions;
+it is an external-validation failure without a fabricated array comparison.
+Unknown observer errors or nonzero exits still require investigation. Offline
+verification distinguishes complete numerical failure witnesses from such
+independently confirmed execution failures.
+
+The Luna 5.6 Low Unstructured hybrid r4 review recovers a report from saved logs
+and raw rank captures after the observer's all-block parser stopped on later
+interleaved duplicates. The primary block used by the unchanged validator is
+intact, and all four complete arrays are byte-identical. Its source-bound
+`full_array_recovered_outputs.rb` extension does not rerun or edit the program.
+Recovered execution fields identify their log basis; the unknown original total
+observation duration remains null. The compact export retains the raw rank
+reports and complete replica witnesses so this exceptional recovery replays
+offline without silently discarding the secondary-output concern.
 
 The service replays saved comparisons before starting new executions. During
 this CPU-only integrity check, the progress file still describes the preceding
@@ -162,6 +186,27 @@ ruby tools/validation_audit/failure_notifications.rb HOME_EVIDENCE mark-full-arr
 active monitoring session. It emits new failures and terminal/stale states promptly,
 with routine progress only hourly by default. It never starts a model or restarts
 the sweep. An optional second argument changes the progress interval in seconds.
+
+### Future native validation
+
+`native_full_array_validation.rb` supplies the full-array step used after the
+ordinary and supplemental comparisons in `ValidationPipeline`. It uses the same
+approved inputs, base validation allocation, observer and numerical tolerances.
+Floyd–Warshall remains covered by the existing complete integer-hash comparison.
+No generated source, sequential source or executable is modified.
+
+One local `/tmp` session reuses each sequential capture across implementations.
+Successful bulk arrays and executable copies are temporary. Per-program evidence
+in `full-array/` retains observations, source/executable bindings, comparisons and
+logs; numerical failures additionally retain complete, digest-addressed scalar
+bytes. Existing exporters copy only that checked JSON evidence, never the local
+workspace or binaries. The pipeline snapshot binds all observer dependencies.
+
+Successful cache entries require intact full-array evidence. Legacy failed
+validation remains failed. An unsupported output boundary or incomplete observer
+raises `InfrastructureError`, retains bounded diagnostic evidence in the result
+directory and leaves the local workspace available for review. It does not
+silently assign a scientific failure or retry the program.
 
 ## Shape sweep concurrency
 

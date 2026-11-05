@@ -43,6 +43,9 @@ module LocalEvaluation
             mode = ExternalValidationCases.resource_mode(definition)
             puts "#{id}: supplemental external comparison #{definition.fetch('id')} args=#{Shellwords.join(definition.fetch('args'))} topology=#{mode} timeout=#{definition.fetch('timeout', VALIDATION_TIMEOUT)}s"
           end
+          if (definition = ValidationAudit::NativeFullArray.definition(info.fetch('benchmark')))
+            puts "#{id}: read-only full-array comparison #{definition.fetch('id')} args=#{Shellwords.join(definition.fetch('args'))} topology=validation timeout=30s"
+          end
         end
         return
       end
@@ -73,6 +76,8 @@ module LocalEvaluation
         puts result.summary
       end
       print_summary(existing)
+    ensure
+      @full_array_validator&.close
     end
 
     private
@@ -162,6 +167,11 @@ module LocalEvaluation
           File.basename(name) == name && File.file?(File.join(output_dir, name)) && LocalEvaluation.sha256_file(File.join(output_dir, name)) == digest
         end
       end
+      full_array = metadata['full_array_validation']
+      if ValidationAudit::NativeFullArray.definition(info.fetch('benchmark')) && (result.output_comparison || full_array)
+        return false unless full_array_artifacts_intact?(output_dir, full_array,
+          benchmark: info.fetch('benchmark'), id: id, passed: !!result.output_comparison)
+      end
 
       true
     rescue StandardError
@@ -181,6 +191,7 @@ module LocalEvaluation
 
     def validate_one(id, info, reference)
       @supplemental_case_results = []
+      @full_array_result = nil
       benchmark = info.fetch("benchmark")
       model = info.fetch("model")
       par_type = info.fetch("par_type")
@@ -285,6 +296,21 @@ module LocalEvaluation
         end
         messages << "Supplemental output comparison PASSED (#{case_id})."
       end
+      if ValidationAudit::NativeFullArray.definition(benchmark)
+        @full_array_result = full_array_validation(id, info, executable, output_dir)
+        unless @full_array_result.fetch('passed')
+          details = @full_array_result.fetch('arrays').filter_map do |array|
+            next if array.fetch('mismatches').zero?
+            "#{array.fetch('name')}: #{array.fetch('mismatches')}/#{array.fetch('elements')} values exceed absolute tolerance #{array.fetch('absolute_tolerance')}; maximum error #{array.fetch('maximum_absolute_error')}."
+          end
+          summary = @full_array_result.fetch('sparse_comparison')
+          details << summary.last unless summary.first
+          result.err_string = "Output comparison FAILED (#{@full_array_result.fetch('definition').fetch('id')}):\n#{details.join("\n")}"
+          messages << result.err_string
+          return finish_result(result_path, messages, result)
+        end
+        messages << 'Complete-array output comparison PASSED.'
+      end
       result.output_comparison = true
       messages << "Output comparison PASSED:\n#{comparison[1]}"
       finish_result(result_path, messages, result)
@@ -318,6 +344,7 @@ module LocalEvaluation
           "output_comparison" => !!result.output_comparison
         },
         "supplemental_validation" => @supplemental_case_results || [],
+        "full_array_validation" => @full_array_result,
         "comparison_policy" => ComparisonPolicy.identifier(result.benchmark),
         "completed_at" => Time.now.iso8601
       })
@@ -327,6 +354,20 @@ module LocalEvaluation
     def validation_args(benchmark)
       flags = benchmark == "roomsim" ? %w[-v -o] : %w[-v -r]
       flags + VALIDATION_SIZES.fetch(benchmark)
+    end
+
+    def full_array_validation(id, info, executable, output_dir)
+      @full_array_validator ||= ValidationAudit::NativeFullArray::Session.new
+      benchmark = info.fetch('benchmark')
+      reference_dir = File.join(@validation_dir, 'reference', benchmark)
+      @full_array_validator.check(id: id, benchmark: benchmark, backend: info.fetch('par_type'),
+        executable: executable, source_root: File.join(output_dir, 'source'),
+        reference_executable: BuildSupport.find_executable(reference_dir, benchmark),
+        reference_source_root: File.join(reference_dir, 'source'), output_dir: output_dir)
+    end
+
+    def full_array_artifacts_intact?(output_dir, entry, **identity)
+      ValidationAudit::NativeFullArray.cache_valid?(output_dir, entry, **identity)
     end
 
     def internal_failure?(output)

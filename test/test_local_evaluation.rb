@@ -47,7 +47,9 @@ class LocalEvaluationTest < Minitest::Test
   def test_pipeline_snapshot_binds_generation_metadata_dependencies
     snapshot = LocalEvaluation.pipeline_source_snapshot
     dependencies = %w[lib/claude_generation_recovery.rb lib/experiment_selection.rb
-                      lib/opencode_generation_observation.rb lib/opencode_harness.rb]
+                      lib/opencode_generation_observation.rb lib/opencode_harness.rb
+                      tools/validation_audit/native_full_array_validation.rb tools/validation_audit/full_array_observer.py
+                      tools/validation_audit/full_array_capture.rb tools/validation_audit/full_array_reconcile.rb]
     dependencies.each do |relative|
       assert_equal LocalEvaluation.sha256_file(File.join(snapshot.fetch("root"), relative)), snapshot.fetch("files").fetch(relative)
     end

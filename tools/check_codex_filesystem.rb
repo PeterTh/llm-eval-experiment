@@ -15,6 +15,12 @@ spec = { "id" => "probe", "state" => File.join(root, "private"), "workspace" => 
   "binary" => File.realpath(ARGV.fetch(0)), "model" => "gpt-6.1-terra", "effort" => "medium",
   "instruction" => "unused: --version exits without inference", "flags" => ["--version"],
   "timeout_seconds" => 30, "environment" => {} }
+if ARGV[1]
+  catalog = File.realpath(ARGV.fetch(1))
+  receipt = File.realpath(catalog + ".receipt.json")
+  spec["model_catalog"] = { "path" => catalog, "sha256" => Digest::SHA256.file(catalog).hexdigest,
+    "receipt_path" => receipt, "receipt_sha256" => Digest::SHA256.file(receipt).hexdigest }
+end
 path = File.join(root, "spec.json")
 File.write(path, JSON.generate(spec))
 runner = CodexObservationRunner.new(path)
@@ -66,7 +72,8 @@ begin
     "filesystem_isolation" => evidence.fetch("filesystem_isolation"), "version" => evidence.fetch("version"),
     "binary_sha256" => evidence.fetch("binary_sha256"), "hybrid_probe" => hybrid, "cuda_probe" => cuda,
     "tool_host_startup" => "passed: pinned companion --help inside isolated namespace",
-    "visibility_and_dns" => visibility, "private_state_removed" => true, "lifecycle_exit_status" => 0 })
+    "visibility_and_dns" => visibility, "private_state_removed" => true, "lifecycle_exit_status" => 0,
+    "model_catalog" => evidence["model_catalog"] })
 ensure
   # Only the two fresh mktemp-derived probe directories, never an existing run.
   FileUtils.remove_entry_secure(root)

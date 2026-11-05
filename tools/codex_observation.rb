@@ -6,6 +6,7 @@ require "open3"
 require "tempfile"
 require "time"
 require_relative "../lib/generation_filesystem"
+require_relative "../lib/codex_model_catalog"
 
 # Trusted outer driver, matching the Claude/OpenCode filesystem boundary. The
 # stock CLI keeps its prompt, tools and budget. Only fresh observation sessions
@@ -27,7 +28,8 @@ class CodexObservationRunner
 
   def filesystem
     @filesystem ||= GenerationFilesystem.new(workspace: @workspace, state: @state, binary: @binary,
-      companions: { "codex-code-mode-host" => File.join(File.dirname(@binary), "codex-code-mode-host") })
+      companions: { "codex-code-mode-host" => File.join(File.dirname(@binary), "codex-code-mode-host") },
+      read_only_state_files: File.file?(File.join(@state, "model-catalog.json")) ? ["model-catalog.json"] : [])
   end
 
   def write(path, value, perm: 0600)
@@ -76,6 +78,27 @@ class CodexObservationRunner
     File.join(@state, "home/.codex/auth.json")
   end
 
+  def prepare_catalog(version)
+    # The existing no-inference --version lifecycle probe needs no catalog.
+    # Every actual generation must supply a verified campaign snapshot.
+    return nil if @spec.fetch("flags") == ["--version"] && !@spec.key?("model_catalog")
+    binding = @spec.fetch("model_catalog") { raise "Prepare a native Codex model catalog before inference" }
+    content = read_regular(binding.fetch("path"))
+    raw_receipt = read_regular(binding.fetch("receipt_path"))
+    raise "Catalog receipt fingerprint differs" unless Digest::SHA256.hexdigest(raw_receipt) == binding.fetch("receipt_sha256")
+    receipt = JSON.parse(raw_receipt)
+    selected = CodexModelCatalog.verify!(content, receipt, version: version, model: @spec.fetch("model"), effort: @spec.fetch("effort"))
+    raise "Catalog snapshot fingerprint differs" unless Digest::SHA256.hexdigest(content) == binding.fetch("sha256")
+    File.write(File.join(@state, "model-catalog.json"), content, perm: 0444)
+    @filesystem = nil # Add the individual read-only mount after publishing it.
+    { "source" => CodexModelCatalog::SOURCE, "sha256" => binding.fetch("sha256"),
+      "receipt_sha256" => binding.fetch("receipt_sha256"), "client_version" => version,
+      "fetched_at" => receipt.fetch("fetched_at"), "mount" => CodexModelCatalog::MOUNT,
+      "model" => @spec.fetch("model"), "effort" => @spec.fetch("effort"),
+      "selected_model_sha256" => Digest::SHA256.hexdigest(JSON.generate(selected)),
+      "context_window" => selected.fetch("context_window"), "definitions_modified" => false }
+  end
+
   def prepare
     raise "Codex state already exists" if File.exist?(@state)
     %w[home/.codex tmp var-tmp].each { |name| FileUtils.mkdir_p(File.join(@state, name), mode: 0700) }
@@ -89,6 +112,7 @@ class CodexObservationRunner
     raise "Isolated Codex version check failed: #{err}" unless status.success?
     version = out.strip[/\Acodex-cli (\d+\.\d+\.\d+)\z/, 1]
     raise "Unexpected Codex version output" unless version
+    catalog = prepare_catalog(version)
     help, error, companion_status = Open3.capture3(@env, *filesystem.prefix,
       File.join(File.dirname(GenerationFilesystem::BINARY), "codex-code-mode-host"), "--help")
     raise "Isolated Codex tool host failed to start: #{error}" unless companion_status.success? && help.start_with?("Usage: codex-code-mode-host")
@@ -97,7 +121,7 @@ class CodexObservationRunner
       "filesystem_isolation" => filesystem.evidence.merge("preflight" => probe),
       "flags" => @spec.fetch("flags"), "model" => @spec.fetch("model"), "effort" => @spec.fetch("effort"),
       "environment" => @env, "config_sha256" => Digest::SHA256.hexdigest(config),
-      "auth_before_sha256" => Digest::SHA256.hexdigest(raw)
+      "auth_before_sha256" => Digest::SHA256.hexdigest(raw), "model_catalog" => catalog
     })
     puts "Codex isolated filesystem verified (#{version}; no model request)."
   end
@@ -160,8 +184,15 @@ class CodexObservationRunner
     raise "Codex executable changed" unless Digest::SHA256.file(@binary).hexdigest == evidence.fetch("binary_sha256")
     raise "Filesystem isolation changed" unless evidence.fetch("filesystem_isolation") == filesystem.evidence.merge("preflight" => filesystem.verify!)
     %w[flags model effort environment].each { |key| raise "Prepared #{key} changed" unless evidence.fetch(key) == @spec.fetch(key) }
+    catalog_flags = []
+    if (catalog = evidence["model_catalog"])
+      raise "Prepared model catalog changed" unless Digest::SHA256.file(File.join(@state, "model-catalog.json")).hexdigest == catalog.fetch("sha256")
+      catalog_flags = ["-c", "model_catalog_json=#{CodexModelCatalog::MOUNT.to_json}"]
+    elsif @spec.fetch("flags") != ["--version"]
+      raise "No verified model catalog; refusing inference"
+    end
     argv = filesystem.command("--model", @spec.fetch("model"), "-c", "model_reasoning_effort=#{@spec.fetch('effort').to_json}",
-      *@spec.fetch("flags"), "exec", @spec.fetch("instruction"))
+      *catalog_flags, *@spec.fetch("flags"), "exec", @spec.fetch("instruction"))
     started = Time.now
     child = Process.spawn(@env, "timeout", "--kill-after=30s", "#{@spec.fetch('timeout_seconds')}s", *argv,
       chdir: @workspace, in: File::NULL, out: $stdout, err: $stderr)

@@ -2,6 +2,7 @@
 require_relative "experiment_selection"
 require_relative "codex_usage"
 require_relative "generation_filesystem"
+require_relative "codex_model_catalog"
 
 # Inspect completed CLI metadata only. Exact session accounting is recovered at
 # the preflight gate and after the whole campaign, never during agent tuning.
@@ -17,6 +18,7 @@ module CodexGenerationObservation
     process = JSON.parse(File.read(paths.fetch("process-status.txt")))
     raise Invalid, "Generation budget differs" unless process.fetch("timeout_seconds") == timeout_seconds
     head = File.open(paths.fetch("output.txt"), "rb") { |file| file.read(8192).to_s }
+    raise Invalid, "Codex used fallback model metadata" if head.include?("Defaulting to fallback metadata")
     match = head.match(/^OpenAI Codex v([^\r\n]+)\r?\n--------\r?\n(.*?)\r?\n--------\r?\n/m)
     raise Invalid, "Missing Codex session header" unless match
     fields = match[2].lines.to_h { |line| line.strip.split(": ", 2) }
@@ -58,6 +60,16 @@ module CodexGenerationObservation
       end
       report["filesystem_isolation"] = isolation.fetch("filesystem_isolation")
       report["archived_sessions"] = sessions
+      if (catalog = isolation["model_catalog"])
+        mount = isolation.dig("filesystem_isolation", "read_only_state_files", "model-catalog.json")
+        unless catalog.values_at("source", "client_version", "model", "effort", "mount", "definitions_modified") ==
+            [CodexModelCatalog::SOURCE, version, model, effort, CodexModelCatalog::MOUNT, false] &&
+            %w[sha256 receipt_sha256 selected_model_sha256].all? { |key| catalog[key].to_s.match?(/\A[0-9a-f]{64}\z/) } &&
+            mount == { "mount" => CodexModelCatalog::MOUNT, "sha256" => catalog["sha256"] }
+          raise Invalid, "Codex model catalog evidence differs"
+        end
+        report["model_catalog"] = catalog
+      end
       report.fetch("sha256")["codex-filesystem.txt"] = Digest::SHA256.file(isolation_path).hexdigest
     end
     if baseline

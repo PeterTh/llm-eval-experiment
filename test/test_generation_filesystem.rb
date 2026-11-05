@@ -101,4 +101,25 @@ class GenerationFilesystemTest < Minitest::Test
       assert_raises(RuntimeError) { GenerationFilesystem.verify_evidence!(altered, workspace: @workspace) }
     end
   end
+
+  def test_model_catalog_is_an_individual_read_only_mount
+    fs = GenerationFilesystem.allocate
+    fs.instance_variable_set(:@workspace, @workspace)
+    fs.instance_variable_set(:@state, @state)
+    fs.instance_variable_set(:@binary, "/opt/codex")
+    fs.instance_variable_set(:@read_only_state_files, { "model-catalog.json" => "#{@state}/model-catalog.json" })
+    assert_includes fs.prefix.each_cons(3).to_a,
+      ["--ro-bind", "#{@state}/model-catalog.json", "/run/llm-eval/state/model-catalog.json"]
+  end
+
+  def test_catalog_mount_evidence_is_narrow_and_bound
+    value = GenerationFilesystem.policy_details(@workspace).merge(
+      "implementation_sha256" => "a" * 64, "bubblewrap_sha256" => "b" * 64,
+      "preflight" => { "passed" => true, "operator_home_visible" => false, "other_observations_visible" => false },
+      "read_only_state_files" => { "model-catalog.json" => { "mount" => "/run/llm-eval/state/model-catalog.json", "sha256" => "c" * 64 } })
+    assert_equal value, GenerationFilesystem.verify_evidence!(value, workspace: @workspace)
+    altered = Marshal.load(Marshal.dump(value))
+    altered.fetch("read_only_state_files").fetch("model-catalog.json")["mount"] = "/home/llmtest"
+    assert_raises(RuntimeError) { GenerationFilesystem.verify_evidence!(altered, workspace: @workspace) }
+  end
 end

@@ -178,6 +178,18 @@ program correctness. Select `--profile=gpt-6-luna-oc-medium` for Luna 6, or
 not renamed or regenerated; the selected native comparison is recorded in the
 campaign manifest.
 
+Codex generation requires a native model-catalog snapshot before inference.
+Run `tools/metadata/prepare_codex_catalog.rb --binary=PINNED_CODEX --output=LOCAL_CATALOG --model=MODEL --effort=EFFORT`
+as `llmtest` while the evaluation account is idle. It uses metadata-only native
+RPCs, retries setup failures, retains unmodified upstream definitions, and checks
+the pinned client with network access disabled and its cache absent. Missing
+catalogs fail closed. Keep the JSON and its `.receipt.json` together, freeze their
+fingerprints in the campaign manifest, and set `LLM_EVAL_CODEX_MODEL_CATALOG` in
+the frozen launcher. Persistent evidence belongs under home; the execution copy
+belongs on local scratch. No authentication or session history is copied into
+the catalog. Each observation receives a verified read-only catalog mount and
+uses native `model_catalog_json`; metadata acquisition is outside task timing.
+
 OpenCode Go uses a separate, private subscription credential and requires operator
 confirmation that **Use balance is off**, with no paid-credit fallback. Its profiles
 are `deepseek-v4.1-flash-oc-high` (the middle supported effort; no medium is exposed),

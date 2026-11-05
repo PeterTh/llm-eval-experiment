@@ -138,4 +138,25 @@ class CodexGenerationObservationTest < Minitest::Test
     File.write(File.join(@directory, "codex-filesystem.txt"), JSON.generate(evidence))
     assert_raises(CodexGenerationObservation::Invalid) { read }
   end
+
+  def test_fallback_model_metadata_is_an_infrastructure_failure
+    @terminal = "warning: Model metadata for `gpt-6.1-sol` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n" + @terminal
+    error = assert_raises(CodexGenerationObservation::Invalid) { read }
+    assert_includes error.message, "fallback model metadata"
+  end
+
+  def test_local_catalog_evidence_is_preserved_and_checked
+    evidence = isolation
+    evidence["model_catalog"] = { "source" => CodexModelCatalog::SOURCE, "client_version" => @version,
+      "model" => "gpt-6.1-sol", "effort" => "medium", "mount" => CodexModelCatalog::MOUNT, "definitions_modified" => false,
+      "sha256" => "a" * 64, "receipt_sha256" => "b" * 64, "selected_model_sha256" => "c" * 64 }
+    evidence.fetch("filesystem_isolation")["read_only_state_files"] = {
+      "model-catalog.json" => { "mount" => CodexModelCatalog::MOUNT, "sha256" => "a" * 64 } }
+    path = File.join(@directory, "codex-filesystem.txt")
+    File.write(path, JSON.generate(evidence))
+    assert_equal evidence.fetch("model_catalog"), read.fetch("model_catalog")
+    evidence.fetch("model_catalog")["sha256"] = "d" * 64
+    File.write(path, JSON.generate(evidence))
+    assert_raises(CodexGenerationObservation::Invalid) { read }
+  end
 end

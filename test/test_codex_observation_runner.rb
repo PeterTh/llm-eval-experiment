@@ -130,4 +130,42 @@ class CodexObservationRunnerTest < Minitest::Test
   def test_no_inference_lifecycle_can_have_no_session
     assert_empty @runner.archive_sessions!(destination: @archive)
   end
+
+  def catalog_binding
+    model = { "slug" => "gpt-6.1-terra", "supported_reasoning_levels" => [{ "effort" => "ultra" }],
+      "context_window" => 500000, "model_messages" => ["synthetic fixture"] }
+    content, receipt = CodexModelCatalog.from_cache(JSON.generate({ "models" => [model], "client_version" => "0.160.1", "fetched_at" => Time.now.utc.iso8601 }),
+      version: "0.160.1", model: "gpt-6.1-terra", effort: "ultra", not_before: Time.now - 1)
+    path = File.join(@root, "catalog.json")
+    File.write(path, content)
+    File.write(path + ".receipt.json", JSON.generate(receipt))
+    { "path" => path, "sha256" => Digest::SHA256.file(path).hexdigest,
+      "receipt_path" => path + ".receipt.json", "receipt_sha256" => Digest::SHA256.file(path + ".receipt.json").hexdigest }
+  end
+
+  def test_generation_requires_catalog_but_version_probe_does_not
+    @runner.instance_variable_set(:@spec, { "flags" => ["--version"] })
+    assert_nil @runner.prepare_catalog("0.160.1")
+    @runner.instance_variable_set(:@spec, { "flags" => ["--disable", "apps"] })
+    assert_raises(RuntimeError) { @runner.prepare_catalog("0.160.1") }
+  end
+
+  def test_verified_catalog_is_bound_to_the_read_only_state_file
+    FileUtils.mkdir_p(@state)
+    binding = catalog_binding
+    @runner.instance_variable_set(:@spec, { "flags" => [], "model" => "gpt-6.1-terra", "effort" => "ultra", "model_catalog" => binding })
+    evidence = @runner.prepare_catalog("0.160.1")
+    assert_equal binding.fetch("sha256"), evidence.fetch("sha256")
+    assert_equal File.binread(binding.fetch("path")), File.binread(File.join(@state, "model-catalog.json"))
+    assert_equal CodexModelCatalog::MOUNT, evidence.fetch("mount")
+    assert_equal 0444, File.stat(File.join(@state, "model-catalog.json")).mode & 0777
+  end
+
+  def test_changed_catalog_receipt_is_rejected_before_copying
+    binding = catalog_binding
+    binding["receipt_sha256"] = "a" * 64
+    @runner.instance_variable_set(:@spec, { "flags" => [], "model" => "gpt-6.1-terra", "effort" => "ultra", "model_catalog" => binding })
+    assert_raises(RuntimeError) { @runner.prepare_catalog("0.160.1") }
+    refute File.exist?(File.join(@state, "model-catalog.json"))
+  end
 end

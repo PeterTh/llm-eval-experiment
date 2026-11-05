@@ -12,9 +12,15 @@ class GenerationFilesystem
   HOME_PATH = "/home/llmtest"
   SYSTEM = %w[/usr /etc /opt /sys].freeze
 
-  def initialize(workspace:, state:, binary:, companions: {})
+  def initialize(workspace:, state:, binary:, companions: {}, read_only_state_files: [])
     @workspace, @state, @binary = workspace, state, binary
     @companions = self.class.validate_companions!(binary, companions)
+    raise "Unexpected read-only state files" unless [[], ["model-catalog.json"]].include?(read_only_state_files)
+    @read_only_state_files = read_only_state_files.to_h do |name|
+      path = File.join(state, name)
+      raise "Linked or missing read-only state file" unless File.file?(path) && File.realpath(path) == path
+      [name, path]
+    end
     raise "Unsafe observation workspace" unless workspace.match?(%r{\A/home/llmtest/evals/[^/]+/[^/]+\z})
     raise "Unsafe observation state" unless state.match?(%r{\A/tmp/(?:opencode|claude|codex)-observation-[^/]+/private\z})
     [workspace, state, binary].each do |path|
@@ -48,6 +54,9 @@ class GenerationFilesystem
     (@companions || {}).each do |name, path|
       args.concat(["--ro-bind", path, File.join(File.dirname(BINARY), name)])
     end
+    (@read_only_state_files || {}).each do |name, path|
+      args.concat(["--ro-bind", path, File.join(STATE, name)])
+    end
     # /etc/resolv.conf is a symlink on this host. Do not expose the rest of /run.
     resolver = "/run/systemd/resolve"
     args.concat(["--ro-bind", resolver, resolver]) if File.directory?(resolver)
@@ -76,7 +85,14 @@ class GenerationFilesystem
       raise "Invalid companion fingerprint or mount" unless companion.is_a?(Hash) && companion.keys.sort == %w[mount sha256] &&
         companion["mount"] == File.join(File.dirname(BINARY), "codex-code-mode-host") && companion["sha256"].to_s.match?(/\A[0-9a-f]{64}\z/)
     end
-    raise "Filesystem isolation policy differs" unless value.reject { |key, _| (hashes + ["preflight", "harness_companions"]).include?(key) } == policy_details(workspace)
+    if value.key?("read_only_state_files")
+      files = value.fetch("read_only_state_files")
+      raise "Unexpected read-only state evidence" unless files.is_a?(Hash) && files.keys == ["model-catalog.json"]
+      catalog = files.fetch("model-catalog.json")
+      raise "Invalid model catalog mount or fingerprint" unless catalog.is_a?(Hash) && catalog.keys.sort == %w[mount sha256] &&
+        catalog["mount"] == File.join(STATE, "model-catalog.json") && catalog["sha256"].to_s.match?(/\A[0-9a-f]{64}\z/)
+    end
+    raise "Filesystem isolation policy differs" unless value.reject { |key, _| (hashes + ["preflight", "harness_companions", "read_only_state_files"]).include?(key) } == policy_details(workspace)
     raise "Filesystem isolation preflight failed" unless value["preflight"] == {
       "passed" => true, "operator_home_visible" => false, "other_observations_visible" => false }
     value
@@ -89,6 +105,11 @@ class GenerationFilesystem
     unless (@companions || {}).empty?
       result["harness_companions"] = @companions.to_h do |name, path|
         [name, { "mount" => File.join(File.dirname(BINARY), name), "sha256" => Digest::SHA256.file(path).hexdigest }]
+      end
+    end
+    unless (@read_only_state_files || {}).empty?
+      result["read_only_state_files"] = @read_only_state_files.to_h do |name, path|
+        [name, { "mount" => File.join(STATE, name), "sha256" => Digest::SHA256.file(path).hexdigest }]
       end
     end
     result

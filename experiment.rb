@@ -3,6 +3,7 @@ require "time"
 require "shellwords"
 require "tmpdir"
 require "open3"
+require "digest"
 
 require_relative "general"
 require_relative "lib/experiment_selection"
@@ -150,6 +151,7 @@ PARAMS = "--allow-all-paths --allow-all-tools --no-ask-user --no-color --autopil
 
 PARAMS_CODEX = '--dangerously-bypass-approvals-and-sandbox --disable apps --disable auth_elicitation --disable browser_use --disable browser_use_external --disable browser_use_full_cdp_access --disable computer_use --disable daemon_auto_start --disable in_app_browser --disable in_app_updates --disable image_generation --disable memories --disable mentions_v2 --disable multi_agent --disable multi_agent_v2 --disable plugin_sharing --disable plugins --disable remote_plugin --disable skill_mcp_dependency_install --disable tool_call_mcp_elicitation --disable tool_suggest --disable workspace_dependencies'
 CODEX_BINARY = ENV.fetch("LLM_EVAL_CODEX_BINARY", "codex")
+CODEX_MODEL_CATALOG = ENV["LLM_EVAL_CODEX_MODEL_CATALOG"]
 OPENCODE_BINARY = ENV.fetch("LLM_EVAL_OPENCODE_BINARY", "/home/llmtest/.local/share/opencode-eval/versions/#{OpenCodeHarness::VERSION}/opencode")
 OPENCODE_AUTH_FILE = ENV.fetch("LLM_EVAL_OPENCODE_AUTH_FILE", "/home/llmtest/.local/share/opencode-eval/access/data/opencode/auth.json")
 OPENCODE_SUPPORT_SCRIPT = File.expand_path("tools/opencode_observation.rb", __dir__)
@@ -598,6 +600,7 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
         if HARNESS == :pi
             command = "#{command_prefix} pi -p \"#{instruction}\" > output.txt 2>&1"
         elsif HARNESS == :codex
+            raise "Set LLM_EVAL_CODEX_MODEL_CATALOG to a verified native catalog (see tools/metadata/prepare_codex_catalog.rb)" unless CODEX_MODEL_CATALOG
             reasoning_effort = REASONING_MAPPING[model] || "xhigh"
             state_parent = Dir.mktmpdir("codex-observation-", "/tmp")
             FileUtils.chmod(01777, state_parent)
@@ -613,7 +616,11 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
                 "state" => File.join(state_parent, "private"), "workspace" => bench_path,
                 "model" => actual_model_id, "effort" => reasoning_effort,
                 "instruction" => instruction, "timeout_seconds" => MAX_TIME_SECONDS,
-                "flags" => CodexHarness.flags(PARAMS_CODEX, profile: model), "environment" => {} }
+                "flags" => CodexHarness.flags(PARAMS_CODEX, profile: model), "environment" => {},
+                "model_catalog" => { "path" => File.realpath(CODEX_MODEL_CATALOG),
+                    "sha256" => Digest::SHA256.file(CODEX_MODEL_CATALOG).hexdigest,
+                    "receipt_path" => File.realpath(CODEX_MODEL_CATALOG + ".receipt.json"),
+                    "receipt_sha256" => Digest::SHA256.file(CODEX_MODEL_CATALOG + ".receipt.json").hexdigest } }
             File.write(spec_path, JSON.pretty_generate(spec) + "\n")
             runner = File.expand_path("tools/codex_observation.rb", __dir__)
             preparation_started = Time.now

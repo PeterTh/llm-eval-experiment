@@ -95,6 +95,22 @@ class CodexObservationRunnerTest < Minitest::Test
     assert_equal original, File.binread(target)
   end
 
+  def test_all_fresh_child_rollouts_are_retained_not_only_parent
+    parent = make_session
+    children = 3.times.map do |i|
+      path = parent.sub("456789abcdef", format("%012d", i))
+      File.write(path, JSON.generate({ "child" => i }) + "\n")
+      path
+    end
+    records = @runner.archive_sessions!(destination: @archive)
+    assert_equal 4, records.size
+    ([parent] + children).each do |path|
+      relative = path.delete_prefix(@source + "/")
+      assert_equal File.binread(path), File.binread(File.join(@archive, relative))
+      assert_equal Digest::SHA256.file(path).hexdigest, records.find { |r| r.fetch("path") == relative }.fetch("sha256")
+    end
+  end
+
   def test_linked_or_unexpected_session_paths_cannot_escape_archive
     source = make_session
     File.symlink(source, File.join(File.dirname(source), "linked.jsonl"))

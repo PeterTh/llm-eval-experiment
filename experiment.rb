@@ -6,6 +6,7 @@ require "open3"
 
 require_relative "general"
 require_relative "lib/experiment_selection"
+require_relative "lib/codex_harness"
 require_relative "lib/opencode_harness"
 
 # General configuration / information
@@ -61,6 +62,7 @@ MODELS = {"claude-sonnet-4.5":1,
           "gpt-6.1-sol-xhigh":0,
           "gpt-6.1-terra-medium":0,
           "gpt-6.1-terra-xhigh":0,
+          "gpt-6.1-terra-ultra":0,
           "gpt-6.1-sol-oc-medium":0,
           "gpt-6-luna-oc-medium":0,
           "claude-fable-5-cc-medium":0,
@@ -92,6 +94,7 @@ MODEL_MAPPING = {
     "gpt-6.1-sol-xhigh" => "gpt-6.1-sol",
     "gpt-6.1-terra-medium" => "gpt-6.1-terra",
     "gpt-6.1-terra-xhigh" => "gpt-6.1-terra",
+    "gpt-6.1-terra-ultra" => "gpt-6.1-terra",
     "gpt-6.1-sol-oc-medium" => "openai/gpt-6.1-sol",
     "gpt-6-luna-oc-medium" => "openai/gpt-6-luna",
     "claude-fable-5-cc-medium" => "claude-fable-5",
@@ -120,6 +123,7 @@ REASONING_MAPPING = {
     "gpt-6.1-sol-xhigh" => "xhigh",
     "gpt-6.1-terra-medium" => "medium",
     "gpt-6.1-terra-xhigh" => "xhigh",
+    "gpt-6.1-terra-ultra" => "ultra",
     "gpt-6.1-sol-oc-medium" => "medium",
     "gpt-6-luna-oc-medium" => "medium",
     "claude-fable-5-cc-medium" => "medium",
@@ -609,7 +613,7 @@ def eval_config(benchmark, model, par_type, run, attempt: 1)
                 "state" => File.join(state_parent, "private"), "workspace" => bench_path,
                 "model" => actual_model_id, "effort" => reasoning_effort,
                 "instruction" => instruction, "timeout_seconds" => MAX_TIME_SECONDS,
-                "flags" => Shellwords.split(PARAMS_CODEX), "environment" => {} }
+                "flags" => CodexHarness.flags(PARAMS_CODEX, profile: model), "environment" => {} }
             File.write(spec_path, JSON.pretty_generate(spec) + "\n")
             runner = File.expand_path("tools/codex_observation.rb", __dir__)
             preparation_started = Time.now

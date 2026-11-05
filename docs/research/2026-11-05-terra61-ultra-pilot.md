@@ -49,3 +49,35 @@ per-request usage across all unique child threads, not only the parent's termina
 counter. Preserve a flag when interrupted-request usage cannot be established;
 do not modify native shutdown behavior or discard otherwise valid observations
 for this limited accounting uncertainty.
+
+## Corrected pilot outcome
+
+The catalog repair passed 495 regression tests (2,925 assertions), the offline
+metadata-only checks, and the existing native MPI/OpenMP and CUDA preflights.
+The captured Terra model definition exactly matches the native catalog retained
+before the initial pilot. Only `matmul_gpt-6.1-terra-ultra_cuda_r1` was repeated;
+its original attempt remains in the campaign's `catalog-repair-20261105/superseded`
+directory. File fingerprints establish that the other three observations are
+unchanged. The replacement completed in 147.76 seconds with two native child
+agents and no catalog-refresh or fallback warning.
+
+All four retained observations passed the harness pilot review: 16 sessions
+(four parents and 12 children), all using Terra Ultra and native context metadata,
+with verified cleanup. The 341 unique recorded request counters reconcile with
+each thread's cumulative usage: 7,577,635 total tokens, including 7,102,720 cached
+input tokens. Three observations retain the interrupted-child uncertainty flag;
+these are recorded totals, not a claim that every interrupted request is billed
+exactly. The retained generation time is 852.58 seconds.
+
+A post-run controller check initially read the progress snapshot as though it
+were an observation report. Independent review of the already-retained report
+resolved that bookkeeping error without another generation run. Detailed evidence
+is retained under
+`~/llm_para_campaigns/20261105-131145-terra61-codex-ultra/catalog-repair-20261105/`,
+including `completed-review.json`, `recorded-tree-usage.jsonl`, and native catalog
+receipts. This accepts the harness pilot, not the scientific validity of the
+generated programs; validation and benchmarking have not started.
+
+The remaining 216 observations are not launched or authorized by this pilot.
+Before a full campaign starts, its accounting path must use parent-plus-child
+records and interruption flags rather than the legacy parent-only recovery.

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
-require_relative 'export_full_array_full'
+require_relative 'full_array_offline_support'
 require_relative 'verify_full_array_pilot_export'
+require_relative 'full_array_eligibility'
 
 module ValidationAudit
   # Offline integrity verification, not a new program execution. Complete
@@ -22,7 +23,7 @@ module ValidationAudit
       names = receipt.fetch('files_sha256').keys
       raise 'Receipt includes itself' if names.include?('export.json')
       names.each do |relative|
-        raise "Evidence member changed: #{relative}" unless ValidationAudit.sha(safe_path(root, relative)) == receipt.fetch('files_sha256').fetch(relative)
+        raise "Evidence member changed: #{relative}" unless FullArrayOffline.sha(safe_path(root, relative)) == receipt.fetch('files_sha256').fetch(relative)
       end
       actual = Dir[File.join(root, '**/*')].select { |path| File.file?(path) || File.symlink?(path) }
         .map { |path| path.delete_prefix(root + '/') }.sort
@@ -34,7 +35,7 @@ module ValidationAudit
       observation = record.fetch('observation')
       objects = observation.fetch('objects')
       stdout = record.fetch('logs').fetch('stdout')
-      printed = FullArrayCapture.output_objects(stdout)
+      printed = FullArrayOffline.output_objects(stdout)
       raise 'Printed-object metadata differs' unless observation.fetch('printed_objects') == printed && !printed.empty?
       key = ->(object) { object.slice('name', 'elements', 'fnv1a64') }
       identity_keys = %w[name dtype elements bytes sha256 fnv1a64]
@@ -46,18 +47,34 @@ module ValidationAudit
         return objects
       end
       review = record.fetch('capture_reconciliation')
-      raise 'Reconciliation digest differs' unless FullArrayFullExport.json_digest(review) == record.fetch('comparison').fetch('observation_reconciliation_sha256')
-      if review['kind'] == FullArrayReviewedOutputs::KIND
+      raise 'Reconciliation digest differs' unless FullArrayOffline.json_digest(review) == record.fetch('comparison').fetch('observation_reconciliation_sha256')
+      if review['kind'] == FullArrayOffline::SUPPRESSED_KIND
+        suppression = record.fetch('suppressed_output_review')
+        selected = suppression.fetch('selected_objects')
+        matches = objects.select { |object| key.call(object) == printed.first }
+        unless !observation.fetch('observation_complete') &&
+            observation.fetch('errors') == ['Captured arrays do not match all printed result objects'] &&
+            printed.size == 1 && matches.size == 1 && selected == matches && selected.first.fetch('rank') == 'rank-0' &&
+            selected == review.fetch('selected_objects') &&
+            FullArrayOffline.json_digest(suppression) == record.fetch('suppressed_output_review_sha256') &&
+            record.fetch('suppressed_output_review_sha256') == review.fetch('suppressed_output_review_sha256') &&
+            suppression.fetch('original_observation_sha256') == record.fetch('comparison').fetch('observation_sha256') &&
+            suppression.fetch('id') == record.fetch('id') && suppression.fetch('kind') == FullArrayOffline::SUPPRESSED_KIND
+          raise 'Suppressed partial captures are not bound to the unique printed root result'
+        end
+        return selected
+      end
+      if review['kind'] == FullArrayOffline::REVIEW_KIND
         primary = record.fetch('primary_output_review')
         selected = primary.fetch('selected_objects')
         unless observation.fetch('observation_complete') && observation.fetch('errors').empty? &&
             printed.map { |object| object.fetch('name') }.uniq.size == 1 &&
             objects.map(&key).tally == printed.tally && selected.size == 1 && objects.include?(selected.first) &&
             key.call(selected.first) == printed.first && selected == review.fetch('selected_objects') &&
-            FullArrayFullExport.json_digest(primary) == record.fetch('primary_output_review_sha256') &&
+            FullArrayOffline.json_digest(primary) == record.fetch('primary_output_review_sha256') &&
             record.fetch('primary_output_review_sha256') == review.fetch('primary_output_review_sha256') &&
             primary.fetch('original_observation_sha256') == record.fetch('comparison').fetch('observation_sha256') &&
-            primary.fetch('id') == record.fetch('id') && primary.fetch('kind') == FullArrayReviewedOutputs::KIND &&
+            primary.fetch('id') == record.fetch('id') && primary.fetch('kind') == FullArrayOffline::REVIEW_KIND &&
             record.fetch('comparison').fetch('passed') == false
           raise 'Primary printed result is not unambiguously bound to the reviewed failure'
         end
@@ -81,15 +98,15 @@ module ValidationAudit
 
     def witness(root, relative)
       raise 'Unexpected witness location' unless relative.match?(%r{\Afailure-arrays/[a-f0-9]{64}\.json\z})
-      value = ValidationAudit.read(safe_path(root, relative))
+      value = FullArrayOffline.read(safe_path(root, relative))
       hex = value.fetch('values_hex')
       raise 'Malformed witness bytes' unless hex.match?(/\A(?:[a-f0-9]{2})*\z/)
       bytes = [hex].pack('H*')
-      type = FullArrayCapture::SYMBOLS.values.find { |entry| entry.first == value.fetch('dtype') }
+      type = FullArrayOffline::SYMBOLS.values.find { |entry| entry.first == value.fetch('dtype') }
       unless type && value.fetch('sha256') == File.basename(relative, '.json') &&
           bytes.bytesize == value.fetch('bytes') && bytes.bytesize == value.fetch('elements') * type[1] &&
           Digest::SHA256.hexdigest(bytes) == value.fetch('sha256') &&
-          (bytes.empty? ? nil : FullArrayCapture.fnv(bytes)) == value.fetch('fnv1a64')
+          (bytes.empty? ? nil : FullArrayOffline.fnv(bytes)) == value.fetch('fnv1a64')
         raise 'Witness content or scalar layout differs'
       end
       [value, bytes.unpack(type[2])]
@@ -103,7 +120,7 @@ module ValidationAudit
     def verify_helper!(record, root)
       source = record.fetch('comparison').fetch('source')
       helper = source.fetch('source_files').fetch('common/hash.hpp')
-      if helper.fetch('sha256') == FullArrayCapture::HASH_SHA
+      if helper.fetch('sha256') == FullArrayOffline::HASH_SHA
         raise 'Unnecessary observation adapter' if record.key?('observation_adapter')
         return
       end
@@ -114,7 +131,7 @@ module ValidationAudit
           helper.fetch('git_blob') == 'ad6b15ea7a7e60c44e77d0600c46475c9c4941dd' &&
           adapter.fetch('schema_version') == 1 && adapter.fetch('id') == record.fetch('id') &&
           adapter.fetch('kind') == 'redundant-mpi-header-hash-helper' &&
-          adapter.fetch('base_helper_sha256') == FullArrayCapture::HASH_SHA &&
+          adapter.fetch('base_helper_sha256') == FullArrayOffline::HASH_SHA &&
           adapter.fetch('base_helper_git_blob') == '42ad06602e366caf62be9789dcae2d52fd0c2845' &&
           adapter.fetch('accepted_helper_sha256') == helper.fetch('sha256') &&
           adapter.fetch('accepted_helper_git_blob') == helper.fetch('git_blob') &&
@@ -124,8 +141,8 @@ module ValidationAudit
           adapter.fetch('observation_complete') == record.fetch('observation').fetch('observation_complete') &&
           adapter.fetch('program_executions') == 1 &&
           %w[frozen_method_files_changed program_source_changes executable_file_changes benchmark_runs llm_invocations].all? { |key| adapter.fetch(key).zero? } &&
-          FullArrayFullExport.json_digest(adapter) == record.fetch('observation_adapter_sha256') &&
-          ValidationAudit.sha(method) == adapter.fetch('adapter_method_sha256')
+          FullArrayOffline.json_digest(adapter) == record.fetch('observation_adapter_sha256') &&
+          FullArrayOffline.sha(method) == adapter.fetch('adapter_method_sha256')
         raise 'Unreviewed or mismatched hash-helper compatibility adapter'
       end
     end
@@ -135,7 +152,7 @@ module ValidationAudit
       review = record.fetch('primary_output_review')
       source = record.fetch('comparison').fetch('source')
       observation = record.fetch('observation')
-      unless record.fetch('id') == FullArrayReviewedOutputs::ID && review.fetch('schema_version') == 1 &&
+      unless record.fetch('id') == FullArrayOffline::REVIEW_ID && review.fetch('schema_version') == 1 &&
           review.fetch('source_commit') == source.fetch('source_commit') && review.fetch('source_path') == source.fetch('source_path') &&
           review.fetch('source_file') == source.fetch('source_files').fetch('roomsim/roomsim.cpp') &&
           review.fetch('source_file').fetch('git_blob') == '503bc397f4526c54baf3ed44a5111ee8ea2c172d' &&
@@ -143,7 +160,7 @@ module ValidationAudit
           review.fetch('stdout_sha256') == observation.fetch('stdout_sha256') &&
           review.fetch('reference_observation_sha256') == reference.fetch('observation_sha256') &&
           review.fetch('extension_method_sha256') == record.fetch('capture_reconciliation').fetch('extension_method_sha256') &&
-          ValidationAudit.sha(safe_path(root, review.fetch('extension_method'))) == review.fetch('extension_method_sha256') &&
+          FullArrayOffline.sha(safe_path(root, review.fetch('extension_method'))) == review.fetch('extension_method_sha256') &&
           %w[program_runs benchmark_runs llm_invocations program_source_changes].all? { |key| review.fetch(key).zero? }
         raise 'Primary-output review source or method differs'
       end
@@ -167,7 +184,7 @@ module ValidationAudit
         unless data.slice('dtype', 'elements', 'bytes', 'sha256', 'fnv1a64') == right.slice('dtype', 'elements', 'bytes', 'sha256', 'fnv1a64')
           raise 'Reviewed replica bytes differ'
         end
-        result = FullArrayCapture.compare_values(ref_values, values, epsilon: tolerance(left, source.fetch('benchmark')))
+        result = FullArrayOffline.compare_values(ref_values, values, epsilon: tolerance(left, source.fetch('benchmark')))
           .merge('name' => left.fetch('name'), 'reference_array_sha256' => left.fetch('sha256'), 'actual_array_sha256' => right.fetch('sha256'))
         comparison = check.fetch('comparison')
         unless comparison.fetch('id') == record.fetch('id') && comparison.fetch('arrays') == [result] &&
@@ -185,21 +202,21 @@ module ValidationAudit
       if expected_method && observation.fetch('method_sha256') != expected_method
         raise 'Observation method differs from the frozen sweep'
       end
-      unless record.fetch('phase') == FullArrayFull::PHASE && id == comparison.fetch('id') && id == observation.fetch('id') &&
+      unless record.fetch('phase') == FullArrayOffline::PHASE && id == comparison.fetch('id') && id == observation.fetch('id') &&
           id == source.fetch('id') && source.fetch('benchmark') == benchmark && source.fetch('backend') == backend &&
           observation.fetch('benchmark') == benchmark && observation.fetch('backend') == backend &&
           observation.fetch('args') == group.fetch('args') &&
-          FullArrayFullExport.json_digest(comparison) == record.fetch('comparison_sha256') &&
-          FullArrayFullExport.json_digest(observation) == comparison.fetch('observation_sha256') &&
+          FullArrayOffline.json_digest(comparison) == record.fetch('comparison_sha256') &&
+          FullArrayOffline.json_digest(observation) == comparison.fetch('observation_sha256') &&
           comparison.fetch('reference_observation_sha256') == reference.fetch('observation_sha256') &&
           logs.keys.sort == %w[command exitcode stderr stdout wall_time] &&
           logs.transform_values { |bytes| Digest::SHA256.hexdigest(bytes) } == record.fetch('log_sha256') &&
           Digest::SHA256.hexdigest(logs.fetch('stdout')) == observation.fetch('stdout_sha256')
         raise "Full-array record identity or digest differs: #{id}"
       end
-      binding = FullArrayFullExport.expand_binding(record.fetch('binding'), source)
+      binding = FullArrayOffline.expand_binding(record.fetch('binding'), source)
       unless binding.fetch('id') == id && binding.fetch('binary_sha256') == observation.fetch('binary_sha256') &&
-          FullArrayFullExport.json_digest(binding) == observation.fetch('binding_sha256')
+          FullArrayOffline.json_digest(binding) == observation.fetch('binding_sha256')
         raise 'Full-array executable/source binding differs'
       end
       verify_helper!(record, root)
@@ -266,7 +283,7 @@ module ValidationAudit
           end
           scalars
         end
-        replay = FullArrayCapture.compare_values(*values, epsilon: epsilon)
+        replay = FullArrayOffline.compare_values(*values, epsilon: epsilon)
         raise 'Complete failure comparison does not reproduce' unless replay == array.slice(*replay.keys)
       end
       sparse = validate(reference.fetch('stdout'), logs.fetch('stdout'), benchmark)
@@ -275,44 +292,89 @@ module ValidationAudit
         raise 'Combined full-array verdict differs'
       end
       verify_primary_review!(record, reference, root)
+      verify_suppressed_review!(record, reference, root)
       true
     end
 
-    def run(directory)
+    def verify_suppressed_review!(record, reference, root)
+      return unless record.key?('suppressed_output_review')
+      review = record.fetch('suppressed_output_review')
+      source = record.fetch('comparison').fetch('source')
+      observation = record.fetch('observation')
+      unless record.fetch('id') == FullArrayOffline::SUPPRESSED_ID && review.fetch('schema_version') == 1 &&
+          review.fetch('source_commit') == source.fetch('source_commit') && review.fetch('source_path') == source.fetch('source_path') &&
+          review.fetch('source_file') == source.fetch('source_files').fetch('roomsim/roomsim.cpp') &&
+          review.fetch('source_file').fetch('git_blob') == '36bc5cd8aade4c247478542768cccb5926e950af' &&
+          review.fetch('source_file').fetch('sha256') == '95921633bbb73aba7e173bdad6c0a833f1c5407f925618e82b2051d73beb852a' &&
+          review.fetch('stdout_sha256') == observation.fetch('stdout_sha256') &&
+          review.fetch('extension_method_sha256') == record.fetch('capture_reconciliation').fetch('extension_method_sha256') &&
+          FullArrayOffline.sha(safe_path(root, review.fetch('extension_method'))) == review.fetch('extension_method_sha256') &&
+          review.fetch('suppressed_ranks') == %w[rank-1 rank-2 rank-3] && review.fetch('captured_objects') == 4 &&
+          observation.fetch('objects').map { |object| object.fetch('rank') }.sort == %w[rank-0 rank-1 rank-2 rank-3] &&
+          %w[program_runs benchmark_runs llm_invocations program_source_changes].all? { |key| review.fetch(key).zero? }
+        raise 'Suppressed-output review source or method differs'
+      end
+      objects = observation.fetch('objects')
+      unless record.fetch('reviewed_replica_arrays').keys.sort == objects.map { |object| object.fetch('sha256') }.uniq.sort
+        raise 'Suppressed capture witness coverage differs'
+      end
+      decoded = objects.to_h do |object|
+        data, values = witness(root, record.fetch('reviewed_replica_arrays').fetch(object.fetch('sha256')))
+        unless data.slice('dtype', 'elements', 'bytes', 'sha256', 'fnv1a64') == object.slice('dtype', 'elements', 'bytes', 'sha256', 'fnv1a64')
+          raise 'Suppressed capture witness differs'
+        end
+        [object.fetch('sha256'), values]
+      end
+      expected = reference.fetch('observation').fetch('objects')
+      unless expected.size == 1 && record.fetch('review_reference_arrays').keys == expected.map { |object| object.fetch('name') }
+        raise 'Suppressed-output reference coverage differs'
+      end
+      left = expected.first
+      right = review.fetch('selected_objects').first
+      data, values = witness(root, record.fetch('review_reference_arrays').fetch(left.fetch('name')))
+      unless data.slice('dtype', 'elements', 'bytes', 'sha256', 'fnv1a64') == left.slice('dtype', 'elements', 'bytes', 'sha256', 'fnv1a64')
+        raise 'Suppressed-output reference bytes differ'
+      end
+      result = FullArrayOffline.compare_values(values, decoded.fetch(right.fetch('sha256')), epsilon: tolerance(left, source.fetch('benchmark')))
+        .merge('name' => left.fetch('name'), 'reference_array_sha256' => left.fetch('sha256'), 'actual_array_sha256' => right.fetch('sha256'))
+      raise 'Printed root comparison does not replay' unless record.fetch('comparison').fetch('arrays') == [result]
+    end
+
+    def run(directory, quiet: false)
       root = File.realpath(directory)
-      receipt = ValidationAudit.read(File.join(root, 'export.json'))
+      receipt = FullArrayOffline.read(File.join(root, 'export.json'))
       raise 'Unsupported full-array export' unless receipt.fetch('schema_version') == 1 && receipt.fetch('kind') == 'full-array-correctness-sweep'
       checked_members(root, receipt)
       shared = receipt.fetch('shared_pilot')
       name = shared.fetch('directory')
       raise 'Unsafe shared pilot location' unless name.match?(/\A[a-zA-Z0-9_-]+\z/)
       pilot = File.join(File.dirname(root), name)
-      raise 'Shared pilot receipt changed' unless ValidationAudit.sha(File.join(pilot, 'export.json')) == shared.fetch('export_sha256')
-      pilot_receipt, pilot_records = FullArrayFullExport.checked_pilot(pilot)
-      FullArrayPilotVerification.run(pilot)
-      plan = ValidationAudit.read(File.join(root, 'plan.json'))
-      completion = ValidationAudit.read(File.join(root, 'completion.json'))
-      ids = FullArrayFullExport.check_completion!(plan, completion, ValidationAudit.sha(File.join(root, 'plan.json')))
-      approval = ValidationAudit.read(File.join(root, 'authorization.json'))
-      unless ValidationAudit.sha(File.join(root, 'authorization.json')) == plan.fetch('authorization_sha256') &&
+      raise 'Shared pilot receipt changed' unless FullArrayOffline.sha(File.join(pilot, 'export.json')) == shared.fetch('export_sha256')
+      pilot_receipt, pilot_records = FullArrayOffline.checked_pilot(pilot)
+      FullArrayPilotVerification.run(pilot, quiet: quiet)
+      plan = FullArrayOffline.read(File.join(root, 'plan.json'))
+      completion = FullArrayOffline.read(File.join(root, 'completion.json'))
+      ids = FullArrayOffline.check_completion!(plan, completion, FullArrayOffline.sha(File.join(root, 'plan.json')))
+      approval = FullArrayOffline.read(File.join(root, 'authorization.json'))
+      unless FullArrayOffline.sha(File.join(root, 'authorization.json')) == plan.fetch('authorization_sha256') &&
           plan.fetch('pilot_plan_sha256') == pilot_receipt.fetch('files_sha256').fetch('full-array-pilot-01/plan.json') &&
           plan.fetch('pilot_completion_sha256') == pilot_receipt.fetch('files_sha256').fetch('full-array-pilot-01/completion.json') &&
           plan.fetch('compatibility_completion_sha256') == pilot_receipt.fetch('files_sha256').fetch('full-array-compatibility-01/completion.json')
         raise 'Full-array authorization or pilot bindings differ'
       end
-      FullArrayFull.check_authorization!(approval, plan.fetch('pilot_plan_sha256'), plan.fetch('pilot_completion_sha256'), ids.size)
+      FullArrayOffline.check_authorization!(approval, plan.fetch('pilot_plan_sha256'), plan.fetch('pilot_completion_sha256'), ids.size)
       plan.fetch('method_sha256').each do |path, digest|
         raise 'Published runtime method differs' unless pilot_receipt.fetch('files_sha256').fetch(File.join('full-sweep-method', path)) == digest
       end
       groups = plan.fetch('groups').flat_map { |group| group.fetch('full_ids').map { |id| [id, group] } }.to_h
-      references = ValidationAudit.read(File.join(pilot, 'references.json'))
-      reference_bindings = ValidationAudit.read(File.join(pilot, 'build-bindings.json'))
+      references = FullArrayOffline.read(File.join(pilot, 'references.json'))
+      reference_bindings = FullArrayOffline.read(File.join(pilot, 'build-bindings.json'))
       references.each_value do |reference|
         observation = reference.fetch('observation')
         binding = reference_bindings.fetch(observation.fetch('id'))
-        unless FullArrayFullExport.json_digest(observation) == reference.fetch('observation_sha256') &&
+        unless FullArrayOffline.json_digest(observation) == reference.fetch('observation_sha256') &&
             Digest::SHA256.hexdigest(reference.fetch('stdout')) == observation.fetch('stdout_sha256') &&
-            FullArrayFullExport.json_digest(binding) == observation.fetch('binding_sha256') &&
+            FullArrayOffline.json_digest(binding) == observation.fetch('binding_sha256') &&
             binding.fetch('binary_sha256') == observation.fetch('binary_sha256')
           raise 'Shared sequential-reference binding differs'
         end
@@ -320,7 +382,7 @@ module ValidationAudit
       expected_method = %w[full_array_capture.rb full_array_rank.rb full_array_observer.py full_array_adapters.rb].to_h do |name|
         [name, plan.fetch('method_sha256').fetch(File.join('tools/validation_audit', name))]
       end
-      reused = ValidationAudit.read(File.join(root, 'reused.json'))
+      reused = FullArrayOffline.read(File.join(root, 'reused.json'))
       raise 'Reused coverage differs' unless reused.keys.sort == plan.fetch('reused').keys.sort
       accepted = reused.to_h do |id, binding|
         entry = pilot_records.fetch([binding.fetch('phase'), id])
@@ -330,11 +392,15 @@ module ValidationAudit
             binding.fetch('phase') == File.dirname(original.fetch('directory')) &&
             binding.fetch('comparison_sha256') == record.fetch('comparison_sha256') &&
             record.fetch('comparison_sha256') == original.fetch('comparison_sha256') &&
-            FullArrayFullExport.json_digest(record.fetch('observation')) == original.fetch('observation_sha256') &&
+            FullArrayOffline.json_digest(record.fetch('observation')) == original.fetch('observation_sha256') &&
             binding.fetch('passed') == record.dig('comparison', 'passed')
           raise 'Reused pilot comparison differs'
         end
         [id, record]
+      end
+      locations = reused.to_h do |id, binding|
+        [id, { 'path' => File.join(pilot, 'records.jsonl'), 'line' => binding.fetch('line'),
+          'line_sha256' => binding.fetch('line_sha256') }]
       end
       shard_names = receipt.fetch('record_shards').map { |shard| shard.fetch('path') }
       unless shard_names == shard_names.uniq && shard_names.sort == receipt.fetch('files_sha256').keys.grep(%r{\Arecords/}).sort
@@ -342,8 +408,8 @@ module ValidationAudit
       end
       receipt.fetch('record_shards').each do |shard|
         path = safe_path(root, shard.fetch('path'))
-        unless ValidationAudit.sha(path) == shard.fetch('sha256') && File.size(path) == shard.fetch('bytes') &&
-            File.size(path) <= FullArrayFullExport::SHARD_BYTES
+        unless FullArrayOffline.sha(path) == shard.fetch('sha256') && File.size(path) == shard.fetch('bytes') &&
+            File.size(path) <= FullArrayOffline::SHARD_BYTES
           raise 'Full-array shard digest or size differs'
         end
         count = 0
@@ -353,8 +419,13 @@ module ValidationAudit
           id = record.fetch('id')
           raise 'Duplicate full-array comparison' if accepted.key?(id)
           group = groups.fetch(id)
+          %w[primary_output_review suppressed_output_review].each do |name|
+            next unless record.key?(name)
+            raise 'Output review plan binding differs' unless record.fetch(name).fetch('plan_sha256') == completion.fetch('plan_sha256')
+          end
           verify_record!(record, references.fetch(group.fetch('benchmark')), group, root, expected_method: expected_method)
           accepted[id] = record
+          locations[id] = { 'path' => path, 'line' => count, 'line_sha256' => Digest::SHA256.hexdigest(line) }
         end
         raise 'Shard record count differs' unless count == shard.fetch('records')
       end
@@ -365,10 +436,36 @@ module ValidationAudit
           %w[benchmark_runs llm_invocations program_source_changes].all? { |key| receipt.fetch(key).zero? }
         raise 'Export scope or scientific dispositions differ'
       end
+      cases = receipt.fetch('eligibility')
+      benchmarks = groups.values.map { |group| group.fetch('benchmark') }.uniq.sort
+      raise 'Eligibility case coverage differs' unless cases.keys == benchmarks
+      cases.each do |benchmark, summary|
+        definition = FullArrayEligibility.definition(benchmark, plan.fetch('groups'))
+        pairs = failed.filter_map do |id|
+          record = accepted.fetch(id)
+          next unless record.dig('comparison', 'source', 'benchmark') == benchmark
+          location = locations.fetch(id)
+          owner = reused.key?(id) ? pilot : root
+          evidence = FullArrayEligibility.location(owner, location.fetch('path'), location.fetch('line'), location.fetch('line_sha256'))
+          FullArrayEligibility.rows(record, evidence, definition)
+        end
+        directory = File.join(root, 'eligibility', benchmark)
+        registry = FullArrayEligibility.registry(definition, references.fetch(benchmark), pairs.map(&:first))
+        records = pairs.map { |pair| JSON.generate(pair.last) + "\n" }.join
+        files = %w[exclusions.json records.jsonl].to_h { |name| [name, FullArrayOffline.sha(File.join(directory, name))] }
+        expected = { 'schema_version' => 1, 'case' => definition, 'records' => pairs.size,
+          'registry_sha256' => files.fetch('exclusions.json'), 'files_sha256' => files }
+        unless FullArrayOffline.read(File.join(directory, 'exclusions.json')) == registry &&
+            File.read(File.join(directory, 'records.jsonl')) == records && summary == expected &&
+            FullArrayOffline.read(File.join(directory, 'export.json')) == expected
+          raise 'Derived eligibility does not match verified full-array evidence'
+        end
+      end
       result = { 'verified_files' => receipt.fetch('files_sha256').size, 'verified_records' => accepted.size,
         'reused_pilot_records' => reused.size, 'full_failure_arrays_reproduced_for' => failed,
         'scope' => 'All retained hashes, execution/source bindings and sparse comparisons verified. Complete failure arrays replay exclusions; successful full-array verdicts remain bound reports without duplicate bulk arrays. No program, compiler or LLM is invoked.' }
-      puts JSON.pretty_generate(result)
+      accepted.each { |id, record| yield record, locations.fetch(id) } if block_given?
+      puts JSON.pretty_generate(result) unless quiet
       result
     end
   end

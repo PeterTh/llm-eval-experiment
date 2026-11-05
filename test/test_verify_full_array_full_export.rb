@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 require 'minitest/autorun'
 require 'tmpdir'
+require_relative '../tools/validation_audit/export_full_array_full'
 require_relative '../tools/validation_audit/verify_full_array_full_export'
 
 class FullArrayFullVerificationTest < Minitest::Test
@@ -126,5 +127,33 @@ class FullArrayFullVerificationTest < Minitest::Test
     FileUtils.mkdir_p(File.dirname(File.join(@root, name)))
     File.symlink('/etc/hosts', File.join(@root, name))
     assert_raises(RuntimeError) { Verify.witness(@root, name) }
+  end
+
+  def test_hash_adapter_preserves_the_recorded_runtime_configuration_name
+    record, = fixture
+    record['id'] = 'black-scholes_qwen-3.6-27B-udq4_hybrid_r2'
+    source = record.fetch('comparison').fetch('source')
+    source['source_commit'] = 'd' * 40
+    helper = { 'sha256' => '59016cf476cc217af79d9271396b24fd4167cf045f0231107590b0155849fe8e',
+      'git_blob' => 'ad6b15ea7a7e60c44e77d0600c46475c9c4941dd' }
+    source.fetch('source_files')['common/hash.hpp'] = helper
+    method_path = 'observer-adapters/fixture.rb'
+    FileUtils.mkdir_p(File.join(@root, 'observer-adapters'))
+    File.write(File.join(@root, method_path), '# fixture method')
+    adapter = { 'schema_version' => 1, 'id' => record.fetch('id'), 'kind' => 'redundant-mpi-header-hash-helper',
+      'adapter_method' => method_path, 'adapter_method_sha256' => ValidationAudit.sha(File.join(@root, method_path)),
+      'base_helper_sha256' => Capture::HASH_SHA, 'base_helper_git_blob' => '42ad06602e366caf62be9789dcae2d52fd0c2845',
+      'accepted_helper_sha256' => helper.fetch('sha256'), 'accepted_helper_git_blob' => helper.fetch('git_blob'),
+      'source_commit' => source.fetch('source_commit'), 'source_files' => source.fetch('source_files'),
+      'effective_configuration' => { 'FullArrayCapture::HASH_SHA' => helper.fetch('sha256') },
+      'observation_sha256' => record.fetch('comparison').fetch('observation_sha256'),
+      'observation_complete' => true, 'program_executions' => 1 }
+    %w[frozen_method_files_changed program_source_changes executable_file_changes benchmark_runs llm_invocations].each { |key| adapter[key] = 0 }
+    record['observation_adapter'] = adapter
+    record['observation_adapter_sha256'] = Export.json_digest(adapter)
+    assert_nil Verify.verify_helper!(record, @root)
+    adapter['effective_configuration'] = { 'FullArrayOffline::HASH_SHA' => helper.fetch('sha256') }
+    record['observation_adapter_sha256'] = Export.json_digest(adapter)
+    assert_raises(RuntimeError) { Verify.verify_helper!(record, @root) }
   end
 end

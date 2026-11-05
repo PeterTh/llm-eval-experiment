@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 require_relative 'export_full_array_pilot'
-require_relative 'full_array_reviewed_outputs'
+require_relative 'full_array_suppressed_outputs'
+require_relative 'full_array_eligibility'
 
 module ValidationAudit
   module FullArrayFullExport
@@ -113,6 +114,18 @@ module ValidationAudit
           [object.fetch('sha256'), FullArrayPilotExport.witness(object, destination)]
         end
       end
+      suppressed_review_path = File.join(directory, 'suppressed-output-review.json')
+      if File.exist?(suppressed_review_path)
+        value['suppressed_output_review'] = ValidationAudit.read(suppressed_review_path)
+        value['suppressed_output_review_sha256'] = ValidationAudit.sha(suppressed_review_path)
+        value['reviewed_replica_arrays'] = observation.fetch('objects').to_h do |object|
+          [object.fetch('sha256'), FullArrayPilotExport.witness(object, destination)]
+        end
+        reference, = verifier.reference_for(row.fetch('benchmark'))
+        value['review_reference_arrays'] = reference.fetch('objects').to_h do |object|
+          [object.fetch('name'), FullArrayPilotExport.witness(object, destination)]
+        end
+      end
       unless comparison.fetch('passed')
         normalized, = verifier.normalized_observation(observation, logs.fetch('stdout'))
         reference, = verifier.reference_for(row.fetch('benchmark'))
@@ -123,6 +136,44 @@ module ValidationAudit
         end
       end
       value
+    end
+
+    def eligibility(destination, plan, pilot, pilot_records, reused, shards)
+      failures = {}
+      reused.each do |id, binding|
+        next if binding.fetch('passed')
+        entry = pilot_records.fetch([binding.fetch('phase'), id])
+        location = FullArrayEligibility.location(pilot, File.join(pilot, 'records.jsonl'),
+          entry.fetch('line'), entry.fetch('line_sha256'))
+        failures[id] = [entry.fetch('record'), location]
+      end
+      shards.each do |shard|
+        path = File.join(destination, shard.fetch('path'))
+        File.foreach(path).with_index(1) do |line, number|
+          value = JSON.parse(line)
+          next if value.dig('comparison', 'passed')
+          raise 'Duplicate eligibility failure' if failures.key?(value.fetch('id'))
+          failures[value.fetch('id')] = [value,
+            FullArrayEligibility.location(destination, path, number, Digest::SHA256.hexdigest(line))]
+        end
+      end
+      references = ValidationAudit.read(File.join(pilot, 'references.json'))
+      plan.fetch('groups').map { |group| group.fetch('benchmark') }.uniq.sort.to_h do |benchmark|
+        definition = FullArrayEligibility.definition(benchmark, plan.fetch('groups'))
+        pairs = failures.sort.filter_map do |_id, (value, location)|
+          next unless value.dig('comparison', 'source', 'benchmark') == benchmark
+          FullArrayEligibility.rows(value, location, definition)
+        end
+        directory = File.join(destination, 'eligibility', benchmark)
+        registry = FullArrayEligibility.registry(definition, references.fetch(benchmark), pairs.map(&:first))
+        ValidationAudit.save(File.join(directory, 'exclusions.json'), registry)
+        LocalEvaluation.atomic_write(File.join(directory, 'records.jsonl'), pairs.map { |pair| JSON.generate(pair.last) + "\n" }.join)
+        files = %w[exclusions.json records.jsonl].to_h { |name| [name, ValidationAudit.sha(File.join(directory, name))] }
+        summary = { 'schema_version' => 1, 'case' => definition, 'records' => pairs.size,
+          'registry_sha256' => files.fetch('exclusions.json'), 'files_sha256' => files }
+        ValidationAudit.save(File.join(directory, 'export.json'), summary)
+        [benchmark, summary]
+      end
     end
 
     def run(workspace:, evidence:, destination:, pilot_directory:)
@@ -179,6 +230,7 @@ module ValidationAudit
       unless failed.sort == completion.fetch('failed_ids') && new_count == plan.fetch('new_checks') && new_count + reused.size == ids.size
         raise 'Export dispositions differ from completed sweep'
       end
+      eligibility_cases = eligibility(destination, plan, pilot_directory, pilot_records, reused, shards)
       ValidationAudit.save(File.join(destination, 'reused.json'), reused)
       %w[plan.json completion.json].each { |name| FileUtils.cp(File.join(root, name), File.join(destination, name)) }
       FileUtils.cp(File.join(evidence, FullArrayFull::AUTHORIZATION), File.join(destination, 'authorization.json'))
@@ -188,7 +240,10 @@ module ValidationAudit
       end
       Dir[File.join(root, 'launch-*.json')].sort.each do |path|
         receipt = ValidationAudit.read(path)
-        source_name = receipt.key?('extension_method_sha256') ? 'launch_full_array_reviewed.rb' : 'launch_full_array.rb'
+        source_name = receipt['launcher_name'] || (receipt.key?('extension_method_sha256') ? 'launch_full_array_reviewed.rb' : 'launch_full_array.rb')
+        unless %w[launch_full_array.rb launch_full_array_reviewed.rb launch_full_array_suppressed.rb].include?(source_name)
+          raise 'Unknown historical sweep launcher'
+        end
         source = File.join(__dir__, source_name)
         raise 'Historical launcher changed before export' unless ValidationAudit.sha(source) == receipt.fetch('launcher_sha256')
         target = File.join(destination, 'launch-methods', receipt.fetch('launcher_sha256') + '.rb')
@@ -202,8 +257,20 @@ module ValidationAudit
         FileUtils.cp(path, File.join(destination, 'launches', File.basename(path)))
       end
       FileUtils.mkdir_p(File.join(destination, 'export-method'))
-      %w[export_full_array_full.rb verify_full_array_full_export.rb].each do |name|
+      %w[export_full_array_full.rb].each do |name|
         FileUtils.cp(File.join(__dir__, name), File.join(destination, 'export-method', name))
+      end
+      # A standalone read-only verifier, independent of the execution stack and
+      # its machine-local paths. Preserve relative requires in this small tree.
+      method_root = File.expand_path('../..', __dir__)
+      %w[tools/validation_audit/verify_full_array_full_export.rb
+        tools/validation_audit/verify_full_array_pilot_export.rb
+        tools/validation_audit/full_array_offline_support.rb
+        tools/validation_audit/full_array_eligibility.rb
+        validation_helper.rb lib/local_evaluation/comparison_policy.rb].each do |name|
+        target = File.join(destination, 'verification-method', name)
+        FileUtils.mkdir_p(File.dirname(target))
+        FileUtils.cp(File.join(method_root, name), target)
       end
       files = Dir[File.join(destination, '**/*')].select { |path| File.file?(path) }.sort
       receipt = { 'schema_version' => 1, 'kind' => 'full-array-correctness-sweep', 'population' => ids.size,
@@ -211,7 +278,7 @@ module ValidationAudit
         'benchmark_runs' => 0, 'llm_invocations' => 0, 'program_source_changes' => 0,
         'shared_pilot' => { 'directory' => File.basename(pilot_directory),
           'export_sha256' => ValidationAudit.sha(File.join(pilot_directory, 'export.json')) },
-        'record_shards' => shards, 'retained_bytes' => files.sum { |path| File.size(path) },
+        'record_shards' => shards, 'eligibility' => eligibility_cases, 'retained_bytes' => files.sum { |path| File.size(path) },
         'files_sha256' => files.to_h { |path| [path.delete_prefix(destination + '/'), ValidationAudit.sha(path)] } }
       ValidationAudit.save(File.join(destination, 'export.json'), receipt)
       puts JSON.pretty_generate(receipt.reject { |key, _| %w[files_sha256 record_shards].include?(key) })

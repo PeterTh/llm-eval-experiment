@@ -22,6 +22,10 @@ module ValidationAudit
 
     def reason(comparison)
       raise 'Passing comparison cannot exclude a program' unless comparison.fetch('passed') == false
+      if comparison['failure_kind'] == 'source-reviewed-program-execution-failure'
+        raise 'Execution failure cannot contain invented array comparisons' unless comparison.fetch('arrays').empty? && !comparison.fetch('sparse_comparison').first
+        return comparison.fetch('sparse_comparison').last
+      end
       parts = comparison.fetch('arrays').filter_map do |array|
         next if array.fetch('mismatches').zero?
         "#{array.fetch('name')}: #{array.fetch('mismatches')}/#{array.fetch('elements')} values exceed absolute tolerance " \

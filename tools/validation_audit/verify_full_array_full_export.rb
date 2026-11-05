@@ -2,6 +2,7 @@
 require_relative 'full_array_offline_support'
 require_relative 'verify_full_array_pilot_export'
 require_relative 'full_array_eligibility'
+require_relative 'full_array_execution_review_policy'
 
 module ValidationAudit
   # Offline integrity verification, not a new program execution. Complete
@@ -221,6 +222,7 @@ module ValidationAudit
         raise 'Full-array executable/source binding differs'
       end
       verify_helper!(record, root)
+      return verify_execution_review!(record, root) if record.key?('execution_failure_review')
       execution = observation.fetch('execution')
       unless execution.fetch('success') && execution.fetch('exit_code') == 0 && !execution.fetch('timed_out') &&
           !execution.fetch('output_truncated') && logs.fetch('exitcode').strip == '0' &&
@@ -296,6 +298,25 @@ module ValidationAudit
       verify_suppressed_review!(record, reference, root)
       verify_root_review!(record, reference, root)
       true
+    end
+
+    def verify_execution_review!(record, root)
+      review = record.fetch('execution_failure_review')
+      comparison = record.fetch('comparison')
+      observation = record.fetch('observation')
+      unless comparison.fetch('failure_kind') == FullArrayExecutionReviewPolicy::KIND && comparison.fetch('passed') == false &&
+          comparison.fetch('arrays').empty? && !record.key?('failure_arrays') &&
+          comparison.fetch('sparse_comparison') == [false, FullArrayExecutionReviewPolicy::REASON] &&
+          FullArrayOffline.json_digest(review) == record.fetch('execution_failure_review_sha256') &&
+          record.fetch('execution_failure_review_sha256') == comparison.fetch('execution_failure_review_sha256') &&
+          comparison.fetch('benchmark_runs').zero? &&
+          %w[program_source_changes executable_file_changes benchmark_runs].all? { |key| observation.fetch(key).zero? } &&
+          %w[extension policy].all? { |name| FullArrayOffline.sha(safe_path(root, review.fetch(name + '_method'))) == review.fetch(name + '_method_sha256') } &&
+          FullArrayOffline.sha(File.join(__dir__, 'full_array_execution_review_policy.rb')) == review.fetch('policy_method_sha256') &&
+          comparison.fetch('total_check_seconds') == observation.fetch('total_seconds') + review.fetch('unwrapped_diagnostic').fetch('execution').fetch('wall_seconds')
+        raise 'Execution review evidence or disposition differs'
+      end
+      FullArrayExecutionReviewPolicy.verify!(review, comparison.fetch('source'), observation, record.fetch('logs'))
     end
 
     def verify_suppressed_review!(record, reference, root)
@@ -460,7 +481,7 @@ module ValidationAudit
           id = record.fetch('id')
           raise 'Duplicate full-array comparison' if accepted.key?(id)
           group = groups.fetch(id)
-          %w[primary_output_review suppressed_output_review root_output_review].each do |name|
+          %w[primary_output_review suppressed_output_review root_output_review execution_failure_review].each do |name|
             next unless record.key?(name)
             raise 'Output review plan binding differs' unless record.fetch(name).fetch('plan_sha256') == completion.fetch('plan_sha256')
           end
@@ -502,9 +523,11 @@ module ValidationAudit
           raise 'Derived eligibility does not match verified full-array evidence'
         end
       end
+      execution_failures = accepted.select { |_id, record| record.key?('execution_failure_review') }.keys.sort
       result = { 'verified_files' => receipt.fetch('files_sha256').size, 'verified_records' => accepted.size,
-        'reused_pilot_records' => reused.size, 'full_failure_arrays_reproduced_for' => failed,
-        'scope' => 'All retained hashes, execution/source bindings and sparse comparisons verified. Complete failure arrays replay exclusions; successful full-array verdicts remain bound reports without duplicate bulk arrays. No program, compiler or LLM is invoked.' }
+        'reused_pilot_records' => reused.size, 'verified_failure_ids' => failed,
+        'full_failure_arrays_reproduced_for' => failed - execution_failures, 'confirmed_execution_failures' => execution_failures,
+        'scope' => 'All retained hashes and execution/source bindings verified. Complete failure arrays replay numerical exclusions; separately reviewed execution failures bind source inspection and an unwrapped correctness diagnostic. Successful full-array verdicts remain bound reports without duplicate bulk arrays. No program, compiler or LLM is invoked.' }
       accepted.each { |id, record| yield record, locations.fetch(id) } if block_given?
       puts JSON.pretty_generate(result) unless quiet
       result

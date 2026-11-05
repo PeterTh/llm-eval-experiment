@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 require_relative 'export_full_array_pilot'
-require_relative 'full_array_root_output_reviews'
+require_relative 'full_array_execution_failure'
 require_relative 'full_array_eligibility'
 
 module ValidationAudit
@@ -128,7 +128,11 @@ module ValidationAudit
           [object.fetch('name'), FullArrayPilotExport.witness(object, destination)]
         end
       end
-      unless comparison.fetch('passed')
+      execution_review_path = File.join(directory, 'execution-failure-review.json')
+      if File.exist?(execution_review_path)
+        value['execution_failure_review'] = ValidationAudit.read(execution_review_path)
+        value['execution_failure_review_sha256'] = ValidationAudit.sha(execution_review_path)
+      elsif !comparison.fetch('passed')
         normalized, = verifier.normalized_observation(observation, logs.fetch('stdout'))
         reference, = verifier.reference_for(row.fetch('benchmark'))
         value['failure_arrays'] = [reference, normalized].to_h do |capture|
@@ -243,7 +247,7 @@ module ValidationAudit
       Dir[File.join(root, 'launch-*.json')].sort.each do |path|
         receipt = ValidationAudit.read(path)
         source_name = receipt['launcher_name'] || (receipt.key?('extension_method_sha256') ? 'launch_full_array_reviewed.rb' : 'launch_full_array.rb')
-        unless %w[launch_full_array.rb launch_full_array_reviewed.rb launch_full_array_suppressed.rb launch_full_array_root_outputs.rb].include?(source_name)
+        unless %w[launch_full_array.rb launch_full_array_reviewed.rb launch_full_array_suppressed.rb launch_full_array_root_outputs.rb launch_full_array_execution_review.rb].include?(source_name)
           raise 'Unknown historical sweep launcher'
         end
         source = File.join(__dir__, source_name)
@@ -268,6 +272,7 @@ module ValidationAudit
       %w[tools/validation_audit/verify_full_array_full_export.rb
         tools/validation_audit/verify_full_array_pilot_export.rb
         tools/validation_audit/full_array_offline_support.rb
+        tools/validation_audit/full_array_execution_review_policy.rb
         tools/validation_audit/full_array_eligibility.rb
         validation_helper.rb lib/local_evaluation/comparison_policy.rb].each do |name|
         target = File.join(destination, 'verification-method', name)

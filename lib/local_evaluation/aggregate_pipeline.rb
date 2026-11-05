@@ -274,6 +274,10 @@ module LocalEvaluation
         result.legacy_reported_tokens = codex_record.fetch("legacy_reported_tokens")
         result.token_usage_source = codex_record.fetch("source")
         result.token_usage_session_id = codex_record.fetch("session_id")
+        if codex_record["schema_version"] == 2
+          result.token_usage_complete = !codex_record.fetch("interrupted_request_usage_uncertain")
+          result.partial_token_counts = counters unless result.token_usage_complete
+        end
       elsif claude_usage
         # Claude Code counts only uncached tokens in input_tokens, so on a cache-heavy agentic run
         # it reports tens of tokens where the model actually processed hundreds of thousands. The

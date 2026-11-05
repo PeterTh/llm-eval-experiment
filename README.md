@@ -98,12 +98,19 @@ Codex campaigns require one per model/effort profile. `gate` accepts those obser
 only on harness metadata, not on the generated program's correctness. `run`
 reuses completed observations and invokes the frozen `runtime_root/run.rb` for
 one pending ID at a time. It checks harness identity, effort, applicable capability
-metadata and completion records between runs. Codex exact token accounting is
+metadata and completion records between runs. Codex token accounting is
 recovered from session rollouts at the preflight gate and after the full campaign,
 with the account idle, never during agent performance tuning. Compact usage records
 bind the counters to each transcript and session hash. An anomaly or a `STOP` file in
 the campaign directory stops further launches; it does not regenerate completed
 work. Genuine full-budget timeouts are retained as observations.
+
+Native-delegation campaigns use parent-plus-descendant schema-2 records. Unique
+per-request counters must reconcile with each thread's cumulative totals; archive
+identity, model/effort and tree connectivity are checked. Interrupted requests
+retain an explicit accounting-uncertainty flag. The terminal's parent-only count
+is preserved but is not used as the whole observation's token total. Single-agent
+campaigns retain the existing schema-1 recovery path.
 
 For Claude Code, an identical same-session initialization repeated after a background-task
 notification is accepted only when the follow-up result identifies that origin

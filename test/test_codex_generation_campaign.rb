@@ -176,4 +176,22 @@ class CodexGenerationCampaignTest < Minitest::Test
     end
     refute File.exist?(File.join(@root, "wrong-codex-usage.jsonl"))
   end
+
+  def test_execute_returns_observation_report_not_progress_snapshot
+    report = nil
+    capture_io { report = @campaign.execute_observation(@ids.first) }
+    assert_equal @ids.first, report.fetch("id")
+    assert_equal "completed", report.fetch("outcome")
+  end
+
+  def test_native_delegation_requires_bound_tree_accounting_not_parent_only
+    @manifest["delegation"] = { "native" => true }
+    @manifest["codex_effective_context_window"] = 475000
+    write_manifest
+    @campaign = SimulatedCampaign.new(@root)
+    @campaign.produce = method(:record)
+    capture_io { assert_raises(KeyError) { @campaign.preflight } }
+    assert_empty @campaign.recoveries
+    refute File.exist?(File.join(@root, "preflight-gate.json"))
+  end
 end

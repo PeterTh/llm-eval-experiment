@@ -19,10 +19,11 @@ tree, actual model/effort selection, complete accounting without inherited-histo
 double counting, and cleanup before accepting the full campaign. Native Ultra
 delegation behavior is something to verify in the pilot, not infer from flags.
 
-Pilot generation alone is authorized. It yields at an observation boundary for
-Fable's 2026-11-06 17:00 UTC reset; it never interrupts an active observation to
-meet that deadline. Persistent evidence is under home, working copies on local
-scratch. A later full campaign requires pilot review and authorization.
+The initial authorization covered pilot generation alone. After reviewing the
+corrected pilot, the user authorized the remaining 216 observations and the
+standard evaluation/publication sequence. The full Terra experiment takes
+priority over resuming Fable; there is no Friday reset cutoff. Persistent
+evidence is under home, working copies on local scratch.
 
 ## Catalog preparation
 
@@ -78,6 +79,18 @@ including `completed-review.json`, `recorded-tree-usage.jsonl`, and native catal
 receipts. This accepts the harness pilot, not the scientific validity of the
 generated programs; validation and benchmarking have not started.
 
-The remaining 216 observations are not launched or authorized by this pilot.
-Before a full campaign starts, its accounting path must use parent-plus-child
-records and interruption flags rather than the legacy parent-only recovery.
+## Full campaign accounting
+
+The full campaign uses schema-2 usage records containing the root and every
+archived descendant, their archive fingerprints, the recorded per-thread totals,
+and explicit interrupted-request uncertainty. Recovery rejects duplicate request
+IDs, foreign thread counters, disconnected session trees, inconsistent cumulative
+counts, and model/effort mismatches. The legacy printed count is checked against
+the root's counters only; aggregate totals include all threads. Scientific result
+aggregation retains the uncertainty flag rather than describing interrupted
+requests as complete billing evidence.
+
+Recovery is performed at the completed pilot gate and after generation, never
+during model execution or performance tuning. Existing single-agent campaigns
+retain the schema-1 accounting path. No native child scheduling, cancellation,
+prompt, model metadata, or experiment budget is changed.

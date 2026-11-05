@@ -6,6 +6,7 @@ require "time"
 require "shellwords"
 require_relative "../lib/claude_generation_observation"
 require_relative "../lib/codex_generation_observation"
+require_relative "../lib/codex_tree_usage"
 require_relative "../lib/opencode_generation_observation"
 require_relative "../lib/generation_cleanup"
 
@@ -191,8 +192,9 @@ class GenerationCampaign
     success = launch(command)
     cleanup_after_run!(id)
     raise "Harness exited unsuccessfully for #{id}" unless success
-    observation(id, baseline: baseline)
+    report = observation(id, baseline: baseline)
     snapshot(phase)
+    report
   end
 
   def recover_usage!(reports, prefix: "")
@@ -200,7 +202,14 @@ class GenerationCampaign
     completed = reports.select { |r| r.fetch("outcome") == "completed" }
     requests = completed.map do |report|
       id = report.fetch("id")
-      CodexUsage.transcript_request(batch: @batch, id: id, path: File.join(@results, id, "output.txt"))
+      request = CodexUsage.transcript_request(batch: @batch, id: id, path: File.join(@results, id, "output.txt"))
+      if @manifest.dig("delegation", "native")
+        request.merge!("accounting_scope" => CodexTreeUsage::SCOPE,
+          "archived_sessions" => report.fetch("archived_sessions"), "model" => report.fetch("model"),
+          "reasoning_effort" => report.fetch("reasoning_effort"),
+          "expected_context_window" => @manifest.fetch("codex_effective_context_window"))
+      end
+      request
     end
     raise "Reused Codex session ID" unless requests.map { |r| r.fetch("session_id") }.uniq.size == requests.size
     reader = ["ruby", File.expand_path("metadata/recover_codex_usage.rb", __dir__), "--read-sessions",
@@ -217,6 +226,11 @@ class GenerationCampaign
       if report["archived_sessions"]
         archived = report.fetch("archived_sessions").find { |item| item.fetch("path") == record.fetch("session_path") }
         raise "Recovered session differs from isolated archive" unless archived && archived.fetch("sha256") == record.fetch("session_sha256")
+        if @manifest.dig("delegation", "native")
+          raise "Delegation requires tree accounting" unless record["source"] == CodexTreeUsage::SOURCE
+          recovered = record.fetch("sessions").map { |s| { "path" => s.fetch("session_path"), "sha256" => s.fetch("session_sha256"), "bytes" => s.fetch("session_bytes") } }
+          raise "Recovered tree differs from isolated archives" unless recovered == report.fetch("archived_sessions")
+        end
       end
     end
     content = records.map { |r| JSON.generate(r) + "\n" }.join
@@ -229,6 +243,7 @@ class GenerationCampaign
     end
     json("#{prefix}usage-recovery.json", { "records" => records.size, "sha256" => Digest::SHA256.hexdigest(content),
       "total_tokens" => records.sum { |r| r.fetch("usage").fetch("total_tokens") },
+      "interrupted_request_usage_uncertain" => records.select { |r| r["interrupted_request_usage_uncertain"] }.map { |r| r.fetch("run_id") },
       "unavailable" => reports.reject { |r| r.fetch("outcome") == "completed" }.map { |r| r.slice("id", "outcome") } })
   end
 

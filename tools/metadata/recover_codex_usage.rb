@@ -7,6 +7,7 @@ require "shellwords"
 require "fileutils"
 require "tempfile"
 require_relative "../../lib/codex_usage"
+require_relative "../../lib/codex_tree_usage"
 
 options = { sessions: "/home/llmtest/.codex/sessions" }
 OptionParser.new do |parser|
@@ -21,10 +22,15 @@ abort "Unexpected arguments" unless ARGV.empty?
 
 if options[:reader]
   requests = JSON.parse(STDIN.read)
-  paths = Dir.glob(File.join(options[:sessions], "**", "*.jsonl")).group_by do |path|
+  legacy_paths = requests.any? { |request| request["accounting_scope"] != CodexTreeUsage::SCOPE } ? Dir.glob(File.join(options[:sessions], "**", "*.jsonl")) : []
+  paths = legacy_paths.group_by do |path|
     File.basename(path)[/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl\z/, 1]
   end
   requests.each do |request|
+    if request["accounting_scope"] == CodexTreeUsage::SCOPE
+      puts JSON.generate(CodexTreeUsage.recover(request, sessions_root: options[:sessions]))
+      next
+    end
     matches = paths.fetch(request.fetch("session_id"), [])
     raise CodexUsage::Invalid, "missing/ambiguous session #{request.fetch('session_id')}" unless matches.size == 1
     puts JSON.generate(CodexUsage.recover(request, matches.first, sessions_root: options[:sessions]))

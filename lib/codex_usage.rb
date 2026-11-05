@@ -26,6 +26,10 @@ module CodexUsage
   end
 
   def validate_record!(record)
+    if record.is_a?(Hash) && record["schema_version"] == 2
+      require_relative "codex_tree_usage"
+      return CodexTreeUsage.validate_record!(record)
+    end
     raise Invalid, "unsupported usage record" unless record.is_a?(Hash) && record["schema_version"] == 1 && record["source"] == SOURCE
     %w[batch run_id session_id cli_version session_path session_cwd token_count_timestamp task_completed_at].each do |field|
       raise Invalid, "missing #{field}" unless record[field].is_a?(String) && !record[field].empty?

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 require_relative 'export_full_array_pilot'
-require_relative 'full_array_execution_failure'
+require_relative 'full_array_recovered_outputs'
 require_relative 'full_array_eligibility'
 
 module ValidationAudit
@@ -114,7 +114,7 @@ module ValidationAudit
           [object.fetch('sha256'), FullArrayPilotExport.witness(object, destination)]
         end
       end
-      %w[suppressed-output-review root-output-review].each do |name|
+      %w[suppressed-output-review root-output-review recovered-output-review].each do |name|
         path = File.join(directory, name + '.json')
         next unless File.exist?(path)
         key = name.tr('-', '_')
@@ -247,7 +247,7 @@ module ValidationAudit
       Dir[File.join(root, 'launch-*.json')].sort.each do |path|
         receipt = ValidationAudit.read(path)
         source_name = receipt['launcher_name'] || (receipt.key?('extension_method_sha256') ? 'launch_full_array_reviewed.rb' : 'launch_full_array.rb')
-        unless %w[launch_full_array.rb launch_full_array_reviewed.rb launch_full_array_suppressed.rb launch_full_array_root_outputs.rb launch_full_array_execution_review.rb].include?(source_name)
+        unless %w[launch_full_array.rb launch_full_array_reviewed.rb launch_full_array_suppressed.rb launch_full_array_root_outputs.rb launch_full_array_execution_review.rb launch_full_array_recovered.rb].include?(source_name)
           raise 'Unknown historical sweep launcher'
         end
         source = File.join(__dir__, source_name)
@@ -273,6 +273,7 @@ module ValidationAudit
         tools/validation_audit/verify_full_array_pilot_export.rb
         tools/validation_audit/full_array_offline_support.rb
         tools/validation_audit/full_array_execution_review_policy.rb
+        tools/validation_audit/full_array_recovered_output_policy.rb
         tools/validation_audit/full_array_eligibility.rb
         validation_helper.rb lib/local_evaluation/comparison_policy.rb].each do |name|
         target = File.join(destination, 'verification-method', name)

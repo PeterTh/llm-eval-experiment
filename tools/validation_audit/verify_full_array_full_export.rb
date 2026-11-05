@@ -3,6 +3,7 @@ require_relative 'full_array_offline_support'
 require_relative 'verify_full_array_pilot_export'
 require_relative 'full_array_eligibility'
 require_relative 'full_array_execution_review_policy'
+require_relative 'full_array_recovered_output_policy'
 
 module ValidationAudit
   # Offline integrity verification, not a new program execution. Complete
@@ -33,6 +34,11 @@ module ValidationAudit
     end
 
     def normalized_objects(record)
+      if record.key?('recovered_output_review')
+        FullArrayRecoveredOutputPolicy.verify!(record.fetch('recovered_output_review'), record.fetch('comparison').fetch('source'),
+          record.fetch('observation'), record.fetch('logs'))
+        return record.fetch('recovered_output_review').fetch('selected_objects')
+      end
       observation = record.fetch('observation')
       objects = observation.fetch('objects')
       stdout = record.fetch('logs').fetch('stdout')
@@ -297,7 +303,21 @@ module ValidationAudit
       verify_primary_review!(record, reference, root)
       verify_suppressed_review!(record, reference, root)
       verify_root_review!(record, reference, root)
+      verify_recovered_review!(record, reference, root)
       true
+    end
+
+    def verify_recovered_review!(record, reference, root)
+      return unless record.key?('recovered_output_review')
+      review = record.fetch('recovered_output_review')
+      unless FullArrayOffline.json_digest(review) == record.fetch('recovered_output_review_sha256') &&
+          record.fetch('recovered_output_review_sha256') == record.fetch('comparison').fetch('recovered_output_review_sha256') &&
+          %w[extension policy].all? { |name| FullArrayOffline.sha(safe_path(root, review.fetch(name + '_method'))) == review.fetch(name + '_method_sha256') } &&
+          FullArrayOffline.sha(File.join(__dir__, 'full_array_recovered_output_policy.rb')) == review.fetch('policy_method_sha256') &&
+          record.fetch('comparison').fetch('total_check_seconds') == record.fetch('observation').fetch('execution').fetch('wall_seconds')
+        raise 'Recovered output review evidence differs'
+      end
+      verify_root_witnesses!(record, reference, root, review)
     end
 
     def verify_execution_review!(record, root)
@@ -481,7 +501,7 @@ module ValidationAudit
           id = record.fetch('id')
           raise 'Duplicate full-array comparison' if accepted.key?(id)
           group = groups.fetch(id)
-          %w[primary_output_review suppressed_output_review root_output_review execution_failure_review].each do |name|
+          %w[primary_output_review suppressed_output_review root_output_review execution_failure_review recovered_output_review].each do |name|
             next unless record.key?(name)
             raise 'Output review plan binding differs' unless record.fetch(name).fetch('plan_sha256') == completion.fetch('plan_sha256')
           end

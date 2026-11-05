@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 require_relative 'export_full_array_pilot'
+require_relative 'full_array_reviewed_outputs'
 
 module ValidationAudit
   module FullArrayFullExport
@@ -104,6 +105,14 @@ module ValidationAudit
         value['observation_adapter'] = ValidationAudit.read(adapter_path)
         value['observation_adapter_sha256'] = ValidationAudit.sha(adapter_path)
       end
+      primary_review_path = File.join(directory, 'primary-output-review.json')
+      if File.exist?(primary_review_path)
+        value['primary_output_review'] = ValidationAudit.read(primary_review_path)
+        value['primary_output_review_sha256'] = ValidationAudit.sha(primary_review_path)
+        value['reviewed_replica_arrays'] = observation.fetch('objects').to_h do |object|
+          [object.fetch('sha256'), FullArrayPilotExport.witness(object, destination)]
+        end
+      end
       unless comparison.fetch('passed')
         normalized, = verifier.normalized_observation(observation, logs.fetch('stdout'))
         reference, = verifier.reference_for(row.fetch('benchmark'))
@@ -173,9 +182,24 @@ module ValidationAudit
       ValidationAudit.save(File.join(destination, 'reused.json'), reused)
       %w[plan.json completion.json].each { |name| FileUtils.cp(File.join(root, name), File.join(destination, name)) }
       FileUtils.cp(File.join(evidence, FullArrayFull::AUTHORIZATION), File.join(destination, 'authorization.json'))
-      %w[attempts failure-events observer-adapters].each do |name|
+      %w[attempts failure-events observer-adapters observer-extensions].each do |name|
         path = File.join(root, name)
         FileUtils.cp_r(path, File.join(destination, name)) if File.directory?(path)
+      end
+      Dir[File.join(root, 'launch-*.json')].sort.each do |path|
+        receipt = ValidationAudit.read(path)
+        source_name = receipt.key?('extension_method_sha256') ? 'launch_full_array_reviewed.rb' : 'launch_full_array.rb'
+        source = File.join(__dir__, source_name)
+        raise 'Historical launcher changed before export' unless ValidationAudit.sha(source) == receipt.fetch('launcher_sha256')
+        target = File.join(destination, 'launch-methods', receipt.fetch('launcher_sha256') + '.rb')
+        FileUtils.mkdir_p(File.dirname(target))
+        if File.file?(target)
+          raise 'Conflicting retained launcher' unless ValidationAudit.sha(target) == receipt.fetch('launcher_sha256')
+        else
+          FileUtils.cp(source, target)
+        end
+        FileUtils.mkdir_p(File.join(destination, 'launches'))
+        FileUtils.cp(path, File.join(destination, 'launches', File.basename(path)))
       end
       FileUtils.mkdir_p(File.join(destination, 'export-method'))
       %w[export_full_array_full.rb verify_full_array_full_export.rb].each do |name|

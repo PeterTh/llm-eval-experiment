@@ -47,6 +47,22 @@ module ValidationAudit
       end
       review = record.fetch('capture_reconciliation')
       raise 'Reconciliation digest differs' unless FullArrayFullExport.json_digest(review) == record.fetch('comparison').fetch('observation_reconciliation_sha256')
+      if review['kind'] == FullArrayReviewedOutputs::KIND
+        primary = record.fetch('primary_output_review')
+        selected = primary.fetch('selected_objects')
+        unless observation.fetch('observation_complete') && observation.fetch('errors').empty? &&
+            printed.map { |object| object.fetch('name') }.uniq.size == 1 &&
+            objects.map(&key).tally == printed.tally && selected.size == 1 && objects.include?(selected.first) &&
+            key.call(selected.first) == printed.first && selected == review.fetch('selected_objects') &&
+            FullArrayFullExport.json_digest(primary) == record.fetch('primary_output_review_sha256') &&
+            record.fetch('primary_output_review_sha256') == review.fetch('primary_output_review_sha256') &&
+            primary.fetch('original_observation_sha256') == record.fetch('comparison').fetch('observation_sha256') &&
+            primary.fetch('id') == record.fetch('id') && primary.fetch('kind') == FullArrayReviewedOutputs::KIND &&
+            record.fetch('comparison').fetch('passed') == false
+          raise 'Primary printed result is not unambiguously bound to the reviewed failure'
+        end
+        return selected
+      end
       unless review.fetch('id') == record.fetch('id') &&
           review.fetch('original_observation_sha256') == record.fetch('comparison').fetch('observation_sha256') &&
           review.fetch('program_runs').zero? && review.fetch('benchmark_runs').zero? &&
@@ -112,6 +128,54 @@ module ValidationAudit
           ValidationAudit.sha(method) == adapter.fetch('adapter_method_sha256')
         raise 'Unreviewed or mismatched hash-helper compatibility adapter'
       end
+    end
+
+    def verify_primary_review!(record, reference, root)
+      return unless record.key?('primary_output_review')
+      review = record.fetch('primary_output_review')
+      source = record.fetch('comparison').fetch('source')
+      observation = record.fetch('observation')
+      unless record.fetch('id') == FullArrayReviewedOutputs::ID && review.fetch('schema_version') == 1 &&
+          review.fetch('source_commit') == source.fetch('source_commit') && review.fetch('source_path') == source.fetch('source_path') &&
+          review.fetch('source_file') == source.fetch('source_files').fetch('roomsim/roomsim.cpp') &&
+          review.fetch('source_file').fetch('git_blob') == '503bc397f4526c54baf3ed44a5111ee8ea2c172d' &&
+          review.fetch('source_file').fetch('sha256') == '8053fb6c27bf55cdf3ee8960f72a7dd059ab168aa2ec73647fd7af7c020bf3bb' &&
+          review.fetch('stdout_sha256') == observation.fetch('stdout_sha256') &&
+          review.fetch('reference_observation_sha256') == reference.fetch('observation_sha256') &&
+          review.fetch('extension_method_sha256') == record.fetch('capture_reconciliation').fetch('extension_method_sha256') &&
+          ValidationAudit.sha(safe_path(root, review.fetch('extension_method'))) == review.fetch('extension_method_sha256') &&
+          %w[program_runs benchmark_runs llm_invocations program_source_changes].all? { |key| review.fetch(key).zero? }
+        raise 'Primary-output review source or method differs'
+      end
+      printed = observation.fetch('printed_objects')
+      checks = review.fetch('ordered_comparisons')
+      unless checks.size == printed.size && review.fetch('captured_objects') == observation.fetch('objects').size &&
+          record.fetch('reviewed_replica_arrays').keys.sort == observation.fetch('objects').map { |object| object.fetch('sha256') }.uniq.sort
+        raise 'Reviewed replica coverage differs'
+      end
+      left = reference.fetch('observation').fetch('objects').fetch(0)
+      ref_owner = reference.fetch('observation').fetch('id')
+      ref_data, ref_values = witness(root, record.fetch('failure_arrays').fetch(ref_owner).fetch(left.fetch('name')))
+      raise 'Reviewed reference bytes differ' unless ref_data.fetch('sha256') == left.fetch('sha256')
+      printed.zip(checks).each do |output, check|
+        right = observation.fetch('objects').find do |object|
+          object.slice('name', 'elements', 'fnv1a64') == output && object.fetch('rank') == check.fetch('rank') &&
+            object.fetch('sha256') == check.fetch('array_sha256')
+        end
+        raise 'Reviewed printed replica is missing' unless right
+        data, values = witness(root, record.fetch('reviewed_replica_arrays').fetch(right.fetch('sha256')))
+        unless data.slice('dtype', 'elements', 'bytes', 'sha256', 'fnv1a64') == right.slice('dtype', 'elements', 'bytes', 'sha256', 'fnv1a64')
+          raise 'Reviewed replica bytes differ'
+        end
+        result = FullArrayCapture.compare_values(ref_values, values, epsilon: tolerance(left, source.fetch('benchmark')))
+          .merge('name' => left.fetch('name'), 'reference_array_sha256' => left.fetch('sha256'), 'actual_array_sha256' => right.fetch('sha256'))
+        comparison = check.fetch('comparison')
+        unless comparison.fetch('id') == record.fetch('id') && comparison.fetch('arrays') == [result] &&
+            comparison.fetch('passed') == result.fetch('mismatches').zero? && comparison.fetch('benchmark_runs').zero?
+          raise 'Complete reviewed replica comparison does not reproduce'
+        end
+      end
+      raise 'Reviewed primary output is not a failure' unless checks.first.dig('comparison', 'passed') == false
     end
 
     def verify_record!(record, reference, group, root, expected_method: nil)
@@ -210,6 +274,7 @@ module ValidationAudit
           comparison.fetch('passed') == (sparse.first && arrays.all? { |array| array.fetch('mismatches').zero? })
         raise 'Combined full-array verdict differs'
       end
+      verify_primary_review!(record, reference, root)
       true
     end
 

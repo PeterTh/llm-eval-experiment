@@ -136,6 +136,21 @@ guard for that observation only. Its code and effective configuration are retain
 alongside the observation. It neither changes the frozen sweep files nor relaxes
 the numerical comparison; completed observations are never repeated.
 
+Nonidentical replicas require an explicit saved-output review, not selection of
+a passing rank. `full_array_reviewed_outputs.rb` retains the inspected Beam
+Roomsim case: the first complete result block used by the unchanged validation
+parser fails, and all four rank comparisons are preserved. Its launch-time
+extension is separately pinned without editing the frozen base method. Unknown
+ambiguities still stop. Resume a sweep containing this review with:
+
+```sh
+ruby tools/validation_audit/launch_full_array_reviewed.rb LOCAL_WORKSPACE HOME_EVIDENCE llm-validation-full-array-20261104
+```
+
+The service replays saved comparisons before starting new executions. During
+this CPU-only integrity check, the progress file still describes the preceding
+attempt. Do not mistake that old checkpoint for an idle or failed new process.
+
 To list new full-array failures and mark IDs only after reporting them in chat:
 
 ```sh

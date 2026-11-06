@@ -159,7 +159,7 @@ module LocalEvaluation
     root = File.expand_path(root)
     fixed = %w[
       general.rb general_evaluation.rb local_benchmark_seed.yml local_evaluation.rb
-      local_gpu_rank_wrapper.rb validation_class.rb validation_helper.rb lib/codex_usage.rb
+      local_gpu_rank_wrapper.rb validation_class.rb validation_helper.rb lib/codex_usage.rb lib/codex_tree_usage.rb
       lib/claude_generation_recovery.rb lib/experiment_selection.rb
       lib/opencode_generation_observation.rb lib/opencode_harness.rb
       tools/validation_audit/native_full_array_validation.rb

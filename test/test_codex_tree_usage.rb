@@ -153,4 +153,11 @@ class CodexTreeUsageTest < Minitest::Test
     refute result.token_usage_complete
     assert_equal record.fetch("usage"), result.partial_token_counts
   end
+
+  def test_tree_parser_is_bound_into_the_evaluation_pipeline_snapshot
+    repository = File.expand_path("..", __dir__)
+    snapshot = LocalEvaluation.pipeline_source_snapshot(repository)
+    assert_equal Digest::SHA256.file(File.join(repository, "lib/codex_tree_usage.rb")).hexdigest,
+      snapshot.fetch("files").fetch("lib/codex_tree_usage.rb")
+  end
 end

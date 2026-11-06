@@ -189,6 +189,21 @@ required for a directly created scoped-revalidation manifest.
 
 ## Benchmarking a validation-first batch
 
+Before benchmarking a new batch, successful SpMV implementations also need the
+separate static work-count review: identical final vectors cannot establish the
+number of repeated products. `tools/validation_audit/spmv_native_review.rb` adapts
+the existing source/bound-executable review packs to a completed native validation
+run, without depending on an already published release inventory. Its `inventory`
+action binds every successful SpMV result; `prepare` copies the validated binaries
+to local `/tmp` and obtains static host/device disassembly. Neither action builds
+or executes a generated program. Use a checked Luna-first pilot (at most three
+parallel reviewers), then accept source/compiled-code evidence with `check` and
+`record`; only uncertainty/disagreement goes to Sol-6.1. `verify`/`finish` require
+complete, provenance-bound accepted coverage. Ambiguity or potential failures do
+not become automatic passes and require retained adjudication. Keep the compact
+review inputs, source bindings and compiled excerpts; do not publish the copied
+binaries or full reproducible disassembly dumps.
+
 `bin/benchmark_validation_batch.rb` sequences the unchanged benchmark pipeline for
 a completed validation-first batch. `prepare` requires the historical frozen
 configuration, accepted timing-correction evidence, completed corrected-program

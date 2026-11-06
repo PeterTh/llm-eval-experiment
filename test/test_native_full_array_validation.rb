@@ -132,4 +132,14 @@ class NativeFullArrayValidationTest < Minitest::Test
     File.write(File.join(directory, 'black_scholes'), 'different executable')
     refute Native.cache_valid?(directory, entry, benchmark: 'black-scholes', id: 'black-scholes_fixture_omp_r1', passed: true)
   end
+
+  def test_reviewed_additive_observer_update_reuses_only_unaffected_methods
+    old = Native::PRE_STREAMED_OPTIONS_METHOD
+    assert Native.compatible_methods?(old, binary_sha256: 'unaffected')
+    refute Native.compatible_methods?(old, binary_sha256: '82bcac98d064d0427fb90ffd229fc4a03796fa39fd329e38c40e9173366f1873')
+    old.each_key do |name|
+      refute Native.compatible_methods?(old.merge(name => 'unknown'), binary_sha256: 'unaffected')
+    end
+    assert Native.compatible_methods?(Native.methods, binary_sha256: '82bcac98d064d0427fb90ffd229fc4a03796fa39fd329e38c40e9173366f1873')
+  end
 end

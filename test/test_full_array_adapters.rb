@@ -40,4 +40,15 @@ class FullArrayAdaptersTest < Minitest::Test
     assert_equal 'frame_vector', ADAPTER.entries(binding(ADAPTER::CANONICAL_HELPER, binary), ['main'], args: args).first.fetch('abi')
     assert_raises(RuntimeError) { ADAPTER.entries(binding(ADAPTER::CANONICAL_HELPER, binary), ['main'], args: args.map { |a| a == '67' ? '68' : a }) }
   end
+
+  def test_streamed_options_require_the_exact_binary_helper_and_shape
+    binary, spec = ADAPTER::BINARIES.find { |_, value| value['assembly'] == 'black_scholes_contiguous_rank_blocks' }
+    args = %w[-v -r -n 10003]
+    result = ADAPTER.entries(binding(ADAPTER::CANONICAL_HELPER, binary), [spec.fetch('location')], args: args)
+    assert_equal 'vector', result.first.fetch('abi')
+    assert_equal 'OptionPricesBlock', result.first.fetch('name')
+    assert_raises(RuntimeError) { ADAPTER.entries(binding(ADAPTER::CANONICAL_HELPER, binary), [], args: %w[-v -r -n 10000]) }
+    assert_raises(RuntimeError) { ADAPTER.entries(binding('changed', binary), [], args: args) }
+    assert_raises(RuntimeError) { ADAPTER.entries(binding(ADAPTER::CANONICAL_HELPER, 'other'), [spec.fetch('location')], args: args) }
+  end
 end

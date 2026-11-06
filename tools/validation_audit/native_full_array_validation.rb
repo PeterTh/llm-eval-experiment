@@ -12,6 +12,17 @@ module ValidationAudit
     LOG_PARTS = %w[command stdout stderr exitcode wall_time].freeze
     METHOD_NAMES = %w[native_full_array_validation.rb full_array_capture.rb
       full_array_rank.rb full_array_observer.py full_array_adapters.rb full_array_reconcile.rb].freeze
+    # The November 6 addition only enables one previously unobservable binary.
+    # Existing complete observations retain their original method receipts, not
+    # relabelled receipts or new executions. Unknown historical methods fail shut.
+    PRE_STREAMED_OPTIONS_METHOD = {
+      'native_full_array_validation.rb' => '794c6bc21c8e4161de1c1af2e86fa3f6e95775cc9ac7eadc15640a08be0076ec',
+      'full_array_capture.rb' => '24e32ac199483da9070b984988587ef61feb4bc32a025b09277e84e30cb3d789',
+      'full_array_rank.rb' => '234e68fd8dfe8f9a9e1728ccfbbd7d407f2ed88aa721af0f8b836288106af1d1',
+      'full_array_observer.py' => '019fa5f8fc3c9fdd8203cb49104506e554815fdbafd8e1d39ee6261a630f75a9',
+      'full_array_adapters.rb' => '6554c5e8e2fcd58a942c925fb34d348564f3a8ca1a71ba8efecc398331fde140',
+      'full_array_reconcile.rb' => '4b25ebc6be464a26b2e14f9f734b0254998e068c6d9c993aa4f06a721f9b8cf8'
+    }.freeze
     module_function
 
     def definition(benchmark)
@@ -25,6 +36,11 @@ module ValidationAudit
 
     def methods
       METHOD_NAMES.to_h { |name| [name, ValidationAudit.sha(File.join(__dir__, name))] }
+    end
+
+    def compatible_methods?(recorded, binary_sha256:)
+      recorded == methods || (recorded == PRE_STREAMED_OPTIONS_METHOD &&
+        binary_sha256 != '82bcac98d064d0427fb90ffd229fc4a03796fa39fd329e38c40e9173366f1873')
     end
 
     def source_files(root)
@@ -93,12 +109,13 @@ module ValidationAudit
       receipt = ValidationAudit.read(receipt_path)
       return false unless receipt.fetch('schema_version') == 1 && receipt.fetch('kind') == PHASE &&
         receipt.fetch('id') == id && receipt.fetch('definition') == definition(benchmark) &&
-        receipt.fetch('passed') == passed && receipt.fetch('method_sha256') == methods &&
+        receipt.fetch('passed') == passed &&
         %w[benchmark_runs llm_invocations program_source_changes executable_file_changes].all? { |key| receipt.fetch(key).zero? }
       checked_files(directory, receipt)
       actual = ValidationAudit.read(File.join(directory, 'actual.json'))
       bound = actual.fetch('binding')
-      bound.fetch('id') == id && bound.fetch('binary_sha256') == ValidationAudit.sha(File.join(output_dir, LocalEvaluation.executable_name(benchmark))) &&
+      compatible_methods?(receipt.fetch('method_sha256'), binary_sha256: bound.fetch('binary_sha256')) &&
+        bound.fetch('id') == id && bound.fetch('binary_sha256') == ValidationAudit.sha(File.join(output_dir, LocalEvaluation.executable_name(benchmark))) &&
         bound.fetch('source_files') == source_files(File.join(output_dir, 'source'))
     rescue StandardError
       false

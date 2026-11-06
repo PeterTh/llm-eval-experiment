@@ -45,7 +45,11 @@ module ValidationAudit
       '7a701bf2300e9cbe90551ffd5d4c1f9ea41dbb75d5495ab3ef9a36eeabeb79e1' => {
         'location' => 'main+0x14f2', 'abi' => 'frame_vector', 'frame_offset' => -0x130,
         'name' => 'GridSlab', 'instruction_hex' => '440fb6ad0dffffff',
-        'assembly' => 'stencil_fixed_faces_and_rank_slabs' }
+        'assembly' => 'stencil_fixed_faces_and_rank_slabs' },
+      '82bcac98d064d0427fb90ffd229fc4a03796fa39fd329e38c40e9173366f1873' => {
+        'location' => '_Z23printDistributedResultsRKSt6vectorIdSaIdEEmii',
+        'abi' => 'vector', 'name' => 'OptionPricesBlock', 'instruction_hex' => 'f30f1efa',
+        'assembly' => 'black_scholes_contiguous_rank_blocks' }
     }.freeze
     module_function
 
@@ -55,7 +59,12 @@ module ValidationAudit
       if special
         raise 'Special observer helper changed' unless helper == CANONICAL_HELPER
         if special['assembly']
-          raise 'Streamed adapter only covers its inspected pilot shape' unless args == %w[-v -r -x 65 -y 61 -z 67 -i 21]
+          inspected_args = case special.fetch('assembly')
+          when 'stencil_fixed_faces_and_rank_slabs' then %w[-v -r -x 65 -y 61 -z 67 -i 21]
+          when 'black_scholes_contiguous_rank_blocks' then %w[-v -r -n 10003]
+          else raise 'Unknown streamed adapter'
+          end
+          raise 'Streamed adapter only covers its inspected pilot shape' unless args == inspected_args
         end
         return [special.merge('dtype' => 'f64le', 'width' => 8)]
       end

@@ -132,8 +132,16 @@ module ValidationAudit
       if selected.any? { |entry| entry['assembly'] }
         fragments = objects
         begin
-          raise 'Ambiguous streamed adapter' unless selected.size == 1 && backend == 'hybrid'
-          objects = [assemble_stencil_slabs(fragments, local)]
+          raise 'Ambiguous streamed adapter' unless selected.size == 1
+          objects = [case selected.first.fetch('assembly')
+          when 'stencil_fixed_faces_and_rank_slabs'
+            raise 'Unexpected streamed topology' unless backend == 'hybrid'
+            assemble_stencil_slabs(fragments, local)
+          when 'black_scholes_contiguous_rank_blocks'
+            raise 'Unexpected streamed topology' unless backend == 'mpi'
+            assemble_option_blocks(fragments, local)
+          else raise 'Unknown streamed adapter'
+          end]
         rescue StandardError => error
           errors << "Streamed observation incomplete: #{error.message}"
           objects = []
@@ -158,6 +166,32 @@ module ValidationAudit
       puts JSON.generate(report.slice('id', 'observation_complete', 'errors', 'total_seconds').merge('arrays' => objects.size))
       $stdout.flush
       report
+    end
+
+    # The binary-pinned printDistributedResults receives a const vector on each
+    # rank, consumes rank zero first, then receives each other rank in order.
+    # Its partition is n / ranks plus one for the first n % ranks. No values
+    # come from the reference; the assembled bytes must match its own output hash.
+    def assemble_option_blocks(fragments, local)
+      total = 10003
+      raise 'Missing or repeated option block' unless fragments.size == 4 &&
+        fragments.map { |fragment| fragment.fetch('rank') }.sort == %w[rank-0 rank-1 rank-2 rank-3]
+      pieces = fragments.sort_by { |fragment| fragment.fetch('rank') }.each_with_index.map do |fragment, rank|
+        count = total / 4 + (rank < total % 4 ? 1 : 0)
+        raise 'Unexpected option block dimensions' unless fragment.fetch('dtype') == 'f64le' &&
+          fragment.fetch('name') == 'OptionPricesBlock' && fragment.fetch('elements') == count
+        bytes = File.binread(fragment.fetch('local_path'))
+        raise 'Option block changed' unless bytes.bytesize == count * 8 &&
+          Digest::SHA256.hexdigest(bytes) == fragment.fetch('sha256')
+        bytes
+      end
+      bytes = pieces.join
+      path = File.join(local, 'assembled-option-prices.f64le')
+      File.open(path, File::WRONLY | File::CREAT | File::EXCL) { |file| file.write(bytes) }
+      { 'name' => 'OptionPrices', 'dtype' => 'f64le', 'elements' => total,
+        'bytes' => bytes.bytesize, 'sha256' => Digest::SHA256.hexdigest(bytes), 'local_path' => path,
+        'fnv1a64' => fnv(bytes), 'rank' => 'assembled',
+        'assembly' => 'Four observed contiguous option blocks in rank order, exactly as the pinned output routine consumes them.' }
     end
 
     # Exact printed-output construction of the pinned streamed implementation:

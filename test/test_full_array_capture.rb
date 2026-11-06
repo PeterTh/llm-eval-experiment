@@ -38,4 +38,28 @@ class FullArrayCaptureTest < Minitest::Test
     assert_equal 'cbf29ce484222325', ValidationAudit::FullArrayCapture.fnv('')
     assert_equal 'a430d84680aabd0b', ValidationAudit::FullArrayCapture.fnv('hello')
   end
+
+  def test_streamed_option_blocks_preserve_rank_order_and_reject_incomplete_data
+    capture = ValidationAudit::FullArrayCapture
+    Dir.mktmpdir('option-block-test-', '/tmp') do |directory|
+      values = (0...10003).map(&:to_f)
+      fragments = 4.times.map do |rank|
+        count = 10003 / 4 + (rank < 10003 % 4 ? 1 : 0)
+        offset = rank * (10003 / 4) + [rank, 10003 % 4].min
+        bytes = values.slice(offset, count).pack('E*')
+        path = File.join(directory, "rank-#{rank}.f64le")
+        File.binwrite(path, bytes)
+        { 'rank' => "rank-#{rank}", 'name' => 'OptionPricesBlock', 'dtype' => 'f64le',
+          'elements' => count, 'sha256' => Digest::SHA256.hexdigest(bytes), 'local_path' => path }
+      end
+      assert_raises(RuntimeError) { capture.assemble_option_blocks(fragments.drop(1), directory) }
+      assert_raises(RuntimeError) { capture.assemble_option_blocks(fragments.map { |f| f.merge('rank' => 'rank-0') }, directory) }
+      assert_raises(RuntimeError) { capture.assemble_option_blocks(fragments.map { |f| f.merge('elements' => 2500) }, directory) }
+      assert_raises(RuntimeError) { capture.assemble_option_blocks(fragments.map { |f| f.merge('sha256' => 'changed') }, directory) }
+      object = capture.assemble_option_blocks(fragments.reverse, directory)
+      assert_equal values.pack('E*'), File.binread(object.fetch('local_path'))
+      assert_equal capture.fnv(values.pack('E*')), object.fetch('fnv1a64')
+      assert_equal 10003, object.fetch('elements')
+    end
+  end
 end

@@ -49,7 +49,11 @@ module ValidationAudit
       '82bcac98d064d0427fb90ffd229fc4a03796fa39fd329e38c40e9173366f1873' => {
         'location' => '_Z23printDistributedResultsRKSt6vectorIdSaIdEEmii',
         'abi' => 'vector', 'name' => 'OptionPricesBlock', 'instruction_hex' => 'f30f1efa',
-        'assembly' => 'black_scholes_contiguous_rank_blocks' }
+        'assembly' => 'black_scholes_contiguous_rank_blocks' },
+      '1c347e084b6c9f2ba1a11e8e1b5fab659d4d26a2915184c817576e3b4efdbf24' => {
+        'location' => 'main+0xc45', 'abi' => 'frame_vector', 'frame_offset' => -0xf0,
+        'name' => 'GridSlabWithHalos', 'instruction_hex' => '4c8badb0fdffff',
+        'assembly' => 'stencil_rank_slabs_with_halos' }
     }.freeze
     module_function
 
@@ -60,7 +64,8 @@ module ValidationAudit
         raise 'Special observer helper changed' unless helper == CANONICAL_HELPER
         if special['assembly']
           inspected_args = case special.fetch('assembly')
-          when 'stencil_fixed_faces_and_rank_slabs' then %w[-v -r -x 65 -y 61 -z 67 -i 21]
+          when 'stencil_fixed_faces_and_rank_slabs', 'stencil_rank_slabs_with_halos'
+            %w[-v -r -x 65 -y 61 -z 67 -i 21]
           when 'black_scholes_contiguous_rank_blocks' then %w[-v -r -n 10003]
           else raise 'Unknown streamed adapter'
           end

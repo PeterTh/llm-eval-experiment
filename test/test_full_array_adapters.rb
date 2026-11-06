@@ -51,4 +51,16 @@ class FullArrayAdaptersTest < Minitest::Test
     assert_raises(RuntimeError) { ADAPTER.entries(binding('changed', binary), [], args: args) }
     assert_raises(RuntimeError) { ADAPTER.entries(binding(ADAPTER::CANONICAL_HELPER, 'other'), [spec.fetch('location')], args: args) }
   end
+
+  def test_halo_slab_adapter_is_pinned_to_odd_iteration_shape_and_binary
+    binary, = ADAPTER::BINARIES.find { |_, spec| spec['assembly'] == 'stencil_rank_slabs_with_halos' }
+    args = %w[-v -r -x 65 -y 61 -z 67 -i 21]
+    entry = ADAPTER.entries(binding(ADAPTER::CANONICAL_HELPER, binary), ['main'], args: args).first
+    assert_equal 'main+0xc45', entry.fetch('location')
+    assert_equal(-0xf0, entry.fetch('frame_offset'))
+    assert_equal 'GridSlabWithHalos', entry.fetch('name')
+    assert_raises(RuntimeError) { ADAPTER.entries(binding(ADAPTER::CANONICAL_HELPER, binary), ['main'], args: args[0...-1] + ['20']) }
+    assert_raises(RuntimeError) { ADAPTER.entries(binding('changed', binary), ['main'], args: args) }
+    assert_raises(RuntimeError) { ADAPTER.entries(binding(ADAPTER::CANONICAL_HELPER, 'changed'), ['main'], args: args) }
+  end
 end

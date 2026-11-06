@@ -62,4 +62,29 @@ class FullArrayCaptureTest < Minitest::Test
       assert_equal 10003, object.fetch('elements')
     end
   end
+
+  def test_halo_slab_assembly_keeps_observed_global_faces_and_excludes_only_halos
+    capture = ValidationAudit::FullArrayCapture
+    Dir.mktmpdir('halo-slab-test-', '/tmp') do |directory|
+      plane, nz = 65 * 61, 67
+      values = (0...(plane * nz)).map { |index| index + 0.25 }
+      fragments = 4.times.map do |rank|
+        depth = nz / 4 + (rank < nz % 4 ? 1 : 0)
+        offset = (rank * (nz / 4) + [rank, nz % 4].min) * plane
+        bytes = (Array.new(plane, -1000.0) + values.slice(offset, depth * plane) + Array.new(plane, -2000.0)).pack('E*')
+        path = File.join(directory, "rank-#{rank}.f64le")
+        File.binwrite(path, bytes)
+        { 'rank' => "rank-#{rank}", 'name' => 'GridSlabWithHalos', 'dtype' => 'f64le',
+          'elements' => (depth + 2) * plane, 'sha256' => Digest::SHA256.hexdigest(bytes), 'local_path' => path }
+      end
+      assert_raises(RuntimeError) { capture.assemble_stencil_halo_slabs(fragments.drop(1), directory) }
+      assert_raises(RuntimeError) { capture.assemble_stencil_halo_slabs(fragments.map { |f| f.merge('rank' => 'rank-0') }, directory) }
+      assert_raises(RuntimeError) { capture.assemble_stencil_halo_slabs(fragments.map { |f| f.merge('elements' => 1) }, directory) }
+      assert_raises(RuntimeError) { capture.assemble_stencil_halo_slabs(fragments.map { |f| f.merge('sha256' => 'changed') }, directory) }
+      object = capture.assemble_stencil_halo_slabs(fragments.reverse, directory)
+      assert_equal values.pack('E*'), File.binread(object.fetch('local_path'))
+      assert_equal capture.fnv(values.pack('E*')), object.fetch('fnv1a64')
+      assert_equal values.size, object.fetch('elements')
+    end
+  end
 end

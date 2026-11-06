@@ -140,6 +140,9 @@ module ValidationAudit
           when 'black_scholes_contiguous_rank_blocks'
             raise 'Unexpected streamed topology' unless backend == 'mpi'
             assemble_option_blocks(fragments, local)
+          when 'stencil_rank_slabs_with_halos'
+            raise 'Unexpected streamed topology' unless backend == 'mpi'
+            assemble_stencil_halo_slabs(fragments, local)
           else raise 'Unknown streamed adapter'
           end]
         rescue StandardError => error
@@ -192,6 +195,35 @@ module ValidationAudit
         'bytes' => bytes.bytesize, 'sha256' => Digest::SHA256.hexdigest(bytes), 'local_path' => path,
         'fnv1a64' => fnv(bytes), 'rank' => 'assembled',
         'assembly' => 'Four observed contiguous option blocks in rank order, exactly as the pinned output routine consumes them.' }
+    end
+
+    # The pinned reportResults streams each rank's local planes, excluding the
+    # leading/trailing communication halos. The fixed global faces are already
+    # in those observed planes: no values are synthesized or read from reference.
+    # At its inlined output entry the inspected 21-iteration run selects grid2,
+    # whose vector object is at rbp-0xf0 on every rank.
+    def assemble_stencil_halo_slabs(fragments, local)
+      nx, ny, nz = 65, 61, 67
+      plane = nx * ny
+      raise 'Missing or repeated halo slab' unless fragments.size == 4 &&
+        fragments.map { |fragment| fragment.fetch('rank') }.sort == %w[rank-0 rank-1 rank-2 rank-3]
+      pieces = fragments.sort_by { |fragment| fragment.fetch('rank') }.each_with_index.map do |fragment, rank|
+        depth = nz / 4 + (rank < nz % 4 ? 1 : 0)
+        count = (depth + 2) * plane
+        raise 'Unexpected halo slab dimensions' unless fragment.fetch('dtype') == 'f64le' &&
+          fragment.fetch('name') == 'GridSlabWithHalos' && fragment.fetch('elements') == count
+        bytes = File.binread(fragment.fetch('local_path'))
+        raise 'Halo slab changed' unless bytes.bytesize == count * 8 &&
+          Digest::SHA256.hexdigest(bytes) == fragment.fetch('sha256')
+        bytes.byteslice(plane * 8, depth * plane * 8)
+      end
+      bytes = pieces.join
+      path = File.join(local, 'assembled-grid.f64le')
+      File.open(path, File::WRONLY | File::CREAT | File::EXCL) { |file| file.write(bytes) }
+      { 'name' => 'Grid', 'dtype' => 'f64le', 'elements' => nx * ny * nz,
+        'bytes' => bytes.bytesize, 'sha256' => Digest::SHA256.hexdigest(bytes), 'local_path' => path,
+        'fnv1a64' => fnv(bytes), 'rank' => 'assembled',
+        'assembly' => 'Four observed rank slabs in rank order, excluding only their two communication halo planes, exactly as the pinned output routine consumes them.' }
     end
 
     # Exact printed-output construction of the pinned streamed implementation:

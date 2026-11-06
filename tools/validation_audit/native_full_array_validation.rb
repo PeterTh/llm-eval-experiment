@@ -12,7 +12,7 @@ module ValidationAudit
     LOG_PARTS = %w[command stdout stderr exitcode wall_time].freeze
     METHOD_NAMES = %w[native_full_array_validation.rb full_array_capture.rb
       full_array_rank.rb full_array_observer.py full_array_adapters.rb full_array_reconcile.rb].freeze
-    # The November 6 addition only enables one previously unobservable binary.
+    # The November 6 additions only enable two previously unobservable binaries.
     # Existing complete observations retain their original method receipts, not
     # relabelled receipts or new executions. Unknown historical methods fail shut.
     PRE_STREAMED_OPTIONS_METHOD = {
@@ -23,6 +23,11 @@ module ValidationAudit
       'full_array_adapters.rb' => '6554c5e8e2fcd58a942c925fb34d348564f3a8ca1a71ba8efecc398331fde140',
       'full_array_reconcile.rb' => '4b25ebc6be464a26b2e14f9f734b0254998e068c6d9c993aa4f06a721f9b8cf8'
     }.freeze
+    PRE_STREAMED_HALO_SLABS_METHOD = PRE_STREAMED_OPTIONS_METHOD.merge(
+      'native_full_array_validation.rb' => '1985f2994da3c1de93e4d9651bae5a4d229846c59ecdf4f6123b64a62ee7c556',
+      'full_array_capture.rb' => '134b90afa90ce9010cb14cd1d927206bdd3bf55ee90ba25328441bb1df3b03e9',
+      'full_array_adapters.rb' => 'd576d6f267b8f54724846f7b75f4e791bc73a5a942220b4a5666b560c6edd909'
+    ).freeze
     module_function
 
     def definition(benchmark)
@@ -39,7 +44,9 @@ module ValidationAudit
     end
 
     def compatible_methods?(recorded, binary_sha256:)
-      recorded == methods || (recorded == PRE_STREAMED_OPTIONS_METHOD &&
+      return true if recorded == methods
+      return false if binary_sha256 == '1c347e084b6c9f2ba1a11e8e1b5fab659d4d26a2915184c817576e3b4efdbf24'
+      recorded == PRE_STREAMED_HALO_SLABS_METHOD || (recorded == PRE_STREAMED_OPTIONS_METHOD &&
         binary_sha256 != '82bcac98d064d0427fb90ffd229fc4a03796fa39fd329e38c40e9173366f1873')
     end
 

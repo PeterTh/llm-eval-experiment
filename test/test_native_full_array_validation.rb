@@ -142,4 +142,18 @@ class NativeFullArrayValidationTest < Minitest::Test
     end
     assert Native.compatible_methods?(Native.methods, binary_sha256: '82bcac98d064d0427fb90ffd229fc4a03796fa39fd329e38c40e9173366f1873')
   end
+
+  def test_halo_slab_addition_preserves_both_known_prior_receipts_only
+    binary = '1c347e084b6c9f2ba1a11e8e1b5fab659d4d26a2915184c817576e3b4efdbf24'
+    [Native::PRE_STREAMED_OPTIONS_METHOD, Native::PRE_STREAMED_HALO_SLABS_METHOD].each do |old|
+      assert Native.compatible_methods?(old, binary_sha256: 'unaffected')
+      refute Native.compatible_methods?(old, binary_sha256: binary)
+      old.each_key do |name|
+        refute Native.compatible_methods?(old.merge(name => 'unknown'), binary_sha256: 'unaffected')
+      end
+    end
+    assert Native.compatible_methods?(Native::PRE_STREAMED_HALO_SLABS_METHOD,
+      binary_sha256: '82bcac98d064d0427fb90ffd229fc4a03796fa39fd329e38c40e9173366f1873')
+    assert Native.compatible_methods?(Native.methods, binary_sha256: binary)
+  end
 end

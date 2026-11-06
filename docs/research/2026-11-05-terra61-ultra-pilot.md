@@ -94,3 +94,13 @@ Recovery is performed at the completed pilot gate and after generation, never
 during model execution or performance tuning. Existing single-agent campaigns
 retain the schema-1 accounting path. No native child scheduling, cancellation,
 prompt, model metadata, or experiment budget is changed.
+
+Post-generation API-equivalent pricing uses `lib/codex_tree_requests.rb` and
+`tools/metadata/recover_codex_tree_requests.rb` to inspect only the already-bound
+parent/child archives. Request ownership and unique response identities, every
+cumulative request prefix, the independent token-count stream, archive hashes,
+model/effort, and session/tree totals must agree. Missing optional request counters
+are not fabricated as zero for pricing. Empty interrupted children remain explicit,
+and the interruption uncertainty is carried into request-level evidence. This
+reader runs only after generation and outside native validation/benchmark work;
+it does not change any original session or scientific measurement.
